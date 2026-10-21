@@ -1342,6 +1342,7 @@
       const m = L.marker([s.lat, s.lng], {
         icon: L.divIcon({ className: '', html: Art.pin(s.isNext), iconSize: [30, 50], iconAnchor: [15, 48], popupAnchor: [0, -46] }),
         title: s.name,
+        zIndexOffset: s.isNext ? 1000 : 0, // the ⭐ next spot sits on top of nearby pins
       }).bindPopup(popupHTML(s));
       m.addTo(markers);
       markerById.set(s.id, m);
