@@ -1,0 +1,17 @@
+name = "icecream-tracker"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "icecream"
+# Placeholder: replaced with the real id from `wrangler d1 create icecream` at deploy time.
+# Local dev (`wrangler dev` / `--local`) does not need a real id.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+# "*" reflects any Origin (fine for local dev). In production set this to the
+# GitHub Pages origin, e.g. "https://<user>.github.io". A comma-separated list is supported.
+ALLOWED_ORIGINS = "*"
+
+# PIN_MUNEEB and PIN_FIZA are secrets: .dev.vars locally, `wrangler secret put` in production.

@@ -1,0 +1,19 @@
+{
+  "name": "icecream-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ice cream debt tracker API (Cloudflare Worker + D1)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "db:init": "wrangler d1 execute icecream --local --file schema.sql && wrangler d1 execute icecream --local --file seed.sql",
+    "db:reset": "wrangler d1 execute icecream --local --command \"DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS shops; DROP TABLE IF EXISTS milestones; DROP TABLE IF EXISTS settings; DROP TABLE IF EXISTS pin_attempts;\" && npm run db:init"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261019.1": true
+  }
+}

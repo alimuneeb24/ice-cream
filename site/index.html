@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#FFF6E5">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Fiza's Ice Creams</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Ice Creams">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="sprinkle-sky" id="sky" aria-hidden="true"></div>
+
+  <!-- Lock screen -->
+  <section class="lock" id="lock" aria-label="Enter your PIN">
+    <div class="lock-card">
+      <div class="lock-stage" id="lockStage">
+        <div class="lock-cone" id="lockCone"></div>
+        <div class="aloo-pop" id="aloo" aria-hidden="true">
+          <div class="aloo-bubble" id="alooSays">Aloo is suspicious 🤨</div>
+          <div id="alooArt"></div>
+        </div>
+      </div>
+      <h1 class="lock-title" id="lockTitle">Psst… what's the secret flavour?</h1>
+      <div class="pin-dots" id="pinDots"><span></span><span></span><span></span><span></span></div>
+      <p class="lock-msg" id="lockMsg" aria-live="polite"></p>
+      <div class="keypad" id="keypad">
+        <button class="key">1</button><button class="key">2</button><button class="key">3</button>
+        <button class="key">4</button><button class="key">5</button><button class="key">6</button>
+        <button class="key">7</button><button class="key">8</button><button class="key">9</button>
+        <button class="key ghost" tabindex="-1" aria-hidden="true"></button>
+        <button class="key">0</button>
+        <button class="key" data-key="back" aria-label="Delete">⌫</button>
+      </div>
+    </div>
+    <svg class="lock-drip" viewBox="0 0 400 60" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 0 H400 V14 C390 14 388 40 376 40 C364 40 366 12 350 12 C334 12 336 52 318 52 C300 52 304 16 284 16 C268 16 270 30 258 30 C246 30 248 10 230 10 C212 10 214 46 194 46 C174 46 180 14 160 14 C144 14 146 34 132 34 C118 34 120 12 102 12 C84 12 88 56 66 56 C46 56 52 18 34 18 C20 18 20 30 10 30 C4 30 2 20 0 18 Z" fill="#FFF6E5"/>
+    </svg>
+  </section>
+
+  <!-- App -->
+  <div class="app" id="app" hidden>
+    <header class="topbar">
+      <span class="hello" id="hello"></span>
+      <div class="top-actions">
+        <button class="icon-btn" id="soundBtn" aria-label="Sound on">🔊</button>
+        <button class="icon-btn" id="lockBtn" aria-label="Lock">🔒</button>
+      </div>
+    </header>
+    <button class="count-pill" id="countPill" aria-label="Back to top">🍦 <b id="pillNum">0</b></button>
+
+    <main class="view view-main" id="viewMain">
+      <section class="parlour" id="parlour">
+        <div class="awning" aria-hidden="true"></div>
+        <div class="shop-sign" id="shopSign"></div>
+
+        <div class="stand-wrap">
+          <div class="stand" id="stand" aria-hidden="true"></div>
+          <div class="stand-empty" id="standEmpty" hidden></div>
+          <div class="stool" id="stool" aria-hidden="true"><span>for Fiza</span></div>
+        </div>
+
+        <div class="tally" aria-live="polite">
+          <div class="tally-num" id="tallyNum">0</div>
+          <div class="tally-label" id="tallyLabel"></div>
+          <div class="tally-sub" id="tallySub"></div>
+          <div id="nextSurprise"></div>
+        </div>
+
+        <div class="bell-zone">
+          <button class="bell-btn" id="bellBtn">
+            <svg class="bell-ring" viewBox="0 0 200 200" aria-hidden="true">
+              <circle class="track" cx="100" cy="100" r="92"/>
+              <circle class="progress" id="ringProgress" cx="100" cy="100" r="92"/>
+            </svg>
+            <span class="bell-art" id="bellArt"></span>
+          </button>
+          <div class="bell-caption">
+            <strong id="bellTitle"></strong>
+            <span id="bellHint"></span>
+          </div>
+        </div>
+
+        <div class="pill-row">
+          <button class="pill" id="openCases">📁 Case files</button>
+          <button class="pill pill-mint" id="openEat">😋 We had ice cream</button>
+        </div>
+      </section>
+
+      <div class="extras">
+        <section class="card wheel-card">
+          <h2>Can't decide? Spin it 🎡</h2>
+          <p class="muted">Totally optional</p>
+          <div class="wheel-wrap">
+            <div class="wheel-pointer" id="wheelPointer"></div>
+            <svg id="wheel" viewBox="0 0 300 300" role="img" aria-label="Flavour wheel"></svg>
+          </div>
+          <button class="btn" id="spinBtn">Spin!</button>
+          <p class="wheel-result" id="wheelResult" aria-live="polite"></p>
+        </section>
+
+        <section class="card map-card">
+          <h2>Our ice cream spots 📍</h2>
+          <div class="map" id="map"></div>
+          <div class="map-actions">
+            <span class="map-hint" id="mapHint">Tap a spot for details</span>
+            <button class="btn btn-small btn-mint" id="addSpotBtn">+ Add a spot</button>
+          </div>
+          <ul class="spot-list" id="spotList"></ul>
+        </section>
+      </div>
+
+      <footer class="foot">made with 🍦 for Fiza</footer>
+    </main>
+
+    <main class="view view-cases" id="viewCases" hidden>
+      <button class="back" id="backBtn">← Back to the parlour</button>
+      <h1 class="cases-title">📁 Case files</h1>
+      <div class="cases-grid">
+        <aside>
+          <div class="wanted" id="wanted"></div>
+          <div class="aloo-id" id="alooId"></div>
+        </aside>
+        <div>
+          <section class="surprises" id="surprises"></section>
+          <div class="stats" id="stats"></div>
+          <ol class="cases" id="cases"></ol>
+          <section class="settings" id="settings"></section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" hidden>
+    <div class="sheet-handle"></div>
+    <div id="sheetBody"></div>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="letter-wrap" id="letter" role="dialog" aria-modal="true" aria-label="A surprise" hidden>
+    <div class="letter-stage" id="letterStage"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/canvas-confetti/1.9.3/confetti.browser.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="config.js"></script>
+  <script src="art.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
