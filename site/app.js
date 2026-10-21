@@ -1215,12 +1215,12 @@
       const mid = (a0 + a1) / 2;
       const [ex, ey] = pt(mid, R * 0.8);
       const label = f.short || f.name;
-      const long = label.length > 10;
+      const long = label.length > 8;
       svg += `<path d="M${cx} ${cy} L${x0.toFixed(2)} ${y0.toFixed(2)} A${R} ${R} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z" fill="${f.color}" stroke="#5A3A2E" stroke-width="2.5" stroke-linejoin="round"/>`;
       svg += `<text x="${ex.toFixed(1)}" y="${ey.toFixed(1)}" font-size="${f.weight > 1 ? 26 : 20}" text-anchor="middle" dominant-baseline="central">${f.emoji}</text>`;
       // Labels run along the radius; flip the left half so nothing reads upside down.
       const left = mid > 180;
-      svg += `<text transform="rotate(${(left ? mid + 90 : mid - 90).toFixed(1)} ${cx} ${cy})" x="${left ? cx - R * 0.44 : cx + R * 0.44}" y="${cy}" font-size="${long ? 10.5 : 13}" font-weight="600" fill="#5A3A2E" text-anchor="middle" dominant-baseline="central" font-family="Fredoka, sans-serif">${esc(label)}</text>`;
+      svg += `<text transform="rotate(${(left ? mid + 90 : mid - 90).toFixed(1)} ${cx} ${cy})" x="${left ? cx - R * 0.47 : cx + R * 0.47}" y="${cy}" font-size="${long ? 11 : 13}" font-weight="600" fill="#5A3A2E" text-anchor="middle" dominant-baseline="central" font-family="Fredoka, sans-serif">${esc(label)}</text>`;
       if (f.sparkle) {
         const [sx, sy] = pt(mid + (a1 - a0) * 0.28, R * 0.62);
         svg += `<text x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" font-size="13" text-anchor="middle" dominant-baseline="central">✨</text>`;
