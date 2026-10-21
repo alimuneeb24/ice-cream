@@ -1,9 +1,9 @@
 -- Seed data. Run once after schema.sql (npm run db:init), or via npm run db:reset.
 
--- The 16 ice creams owed before this website existed. The fixed old timestamp
+-- The 14 ice creams owed before this website existed. The fixed old timestamp
 -- (1760000000000) means this event never triggers the +2 cooldown.
 INSERT INTO events (type, qty, by, note, flavour, shop_id, created_at)
-VALUES ('owe', 16, 'system', 'The Archives — ice creams from before this website existed', NULL, NULL, 1760000000000);
+VALUES ('owe', 14, 'system', 'The Archives — ice creams from before this website existed', NULL, NULL, 1760000000000);
 
 -- SHOPS
 -- Real branches near Gulshan / Johar / Bahadurabad. Coordinates are the shops'
