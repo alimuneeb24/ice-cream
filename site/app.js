@@ -1323,7 +1323,8 @@
     const sig = JSON.stringify(state.shops);
     if (sig === shopsSig) return;
     shopsSig = sig;
-    const shops = state.shops;
+    // The ⭐ next spot is the top priority, so it leads the list.
+    const shops = [...state.shops].sort((a, b) => b.isNext - a.isNext);
 
     $('spotList').innerHTML = shops.length
       ? shops.map((s) => `

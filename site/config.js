@@ -33,6 +33,9 @@
       { key: 'vanilla', name: 'Vanilla', emoji: '🤍', color: '#FFF3D6', weight: 1, sprinkles: true },
       { key: 'kulfi', name: 'Kulfi', emoji: '🥛', color: '#F7DFA8', weight: 1 },
       { key: 'caramel', name: 'Caramel', emoji: '🍯', color: '#F2C089', weight: 1 },
+      { key: 'blueberry', name: 'Blueberry', emoji: '🫐', color: '#B4BEF7', weight: 1 },
+      { key: 'cheesecake', name: 'Strawberry Cheesecake', short: 'Cheesecake', emoji: '🍰', color: '#FFE3C8', weight: 1, sprinkles: true },
+      { key: 'bounty', name: 'Bounty', emoji: '🥥', color: '#F7F1E8', weight: 1, specks: true },
     ],
 
     // A surprise every 10 ice creams owed (all-time, so eating never re-locks anything).
