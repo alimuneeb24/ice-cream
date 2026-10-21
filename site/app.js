@@ -57,7 +57,8 @@
     if (!soundOn) return null;
     try {
       actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-      if (actx.state === 'suspended') actx.resume();
+      // iOS uses 'interrupted' after switching apps, not just 'suspended'.
+      if (actx.state !== 'running') actx.resume();
       return actx;
     } catch { return null; }
   }
