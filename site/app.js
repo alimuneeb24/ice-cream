@@ -257,7 +257,7 @@
     $('aloo').classList.remove('show');
     $('lockStage').classList.remove('suspect');
     $('lockCone').innerHTML = Art.cone({ scoops: ['chocolate', 'strawberry'], expr: 'happy' });
-    $('lockTitle').textContent = s.me === C.HER ? `Hi ${C.HER}! 💕` : `Hi ${C.HIM} 🙈`;
+    $('lockTitle').textContent = s.me === C.HER ? `Hi ${C.HER}! 🍦` : `Hi ${C.HIM} 🙈`;
     $('lockMsg').textContent = '';
     setTimeout(() => {
       showApp();
@@ -360,7 +360,7 @@
     const next = nextMilestone();
     if (isHim()) {
       const sealed = (letterRow(next) || {}).note;
-      $('nextSurprise').innerHTML = `<button class="next-surprise" data-letter="${next}">🎁 next surprise at ${next} · ${sealed ? 'note sealed 💌' : 'write a note ✍️'}</button>`;
+      $('nextSurprise').innerHTML = `<button class="next-surprise" data-letter="${next}">🎁 next surprise at ${next} · ${sealed ? 'note sealed ✉️' : 'write a note ✍️'}</button>`;
     } else {
       $('nextSurprise').innerHTML = `<div class="next-surprise">🎁 next surprise at ${next} · ${next - owed} to go</div>`;
     }
@@ -746,7 +746,7 @@
     const stage = $('letterStage');
     stage.className = 'letter-stage';
     stage.innerHTML = `<button class="envelope-btn" id="envBtn" aria-label="Open your surprise">${Art.envelope()}</button>
-      <div class="letter-hint">You unlocked something 💌<br><small style="font-weight:500">tap to open</small></div>`;
+      <div class="letter-hint">You unlocked something ✉️<br><small style="font-weight:500">tap to open</small></div>`;
     $('letter').hidden = false;
     sfx.yay();
     buzz([20, 40, 20]);
@@ -776,7 +776,7 @@
         <h3>${at} ice creams! 🎉</h3>
         ${text ? `<div class="letter-note">${esc(text)}</div><div class="letter-sign">— ${esc(C.HIM)}</div>` : `<p class="muted">${esc(intro)}</p>`}
         ${u ? `<div class="letter-new">${u.emoji} New: ${esc(u.name)}</div>` : ''}
-        <div><button class="btn" id="letterOk">${fresh ? 'Yayyy 💕' : 'Close'}</button></div>
+        <div><button class="btn" id="letterOk">${fresh ? 'Yayyy 🎉' : 'Close'}</button></div>
       </div>`;
     $('letter').hidden = false;
     if (fresh) burst($('letterStage'));
@@ -794,17 +794,17 @@
     const row = letterRow(at) || {};
     const u = upgradeAt(at);
     const status = row.openedAt
-      ? `${C.HER} opened this on ${fmtDate(row.openedAt)} 💕`
+      ? `${C.HER} opened this on ${fmtDate(row.openedAt)} ✓`
       : state.totals.owed >= at ? `Unlocked, ${C.HER} hasn't opened it yet 👀` : `Sealed until ${at} ice creams 🔒`;
     openSheet(
-      `<h3>Note for ${at} ice creams 💌</h3>
+      `<h3>Note for ${at} ice creams ✉️</h3>
        <p>${esc(status)}${u ? `<br>Also unlocks: ${u.emoji} ${esc(u.name)}` : ''}</p>
        <label for="letterIn">Your note (optional)</label>
        <textarea id="letterIn" rows="6" maxlength="1000" placeholder="Write something sweet… she'll read it when she hits ${at}">${esc(row.note || '')}</textarea>
        <div class="sheet-actions">
          <button class="link-btn" data-act="preview">Preview</button><span class="spacer"></span>
          <button class="btn btn-plain" data-act="cancel">Cancel</button>
-         <button class="btn" data-act="save">Seal it 💌</button>
+         <button class="btn" data-act="save">Seal it ✉️</button>
        </div>`,
       (root) => {
         const input = root.querySelector('#letterIn');
@@ -817,7 +817,7 @@
             setState(res.state);
             closeSheet(true);
             renderAll();
-            toast(input.value.trim() ? 'Sealed 💌' : 'Note removed');
+            toast(input.value.trim() ? 'Sealed ✉️' : 'Note removed');
           } catch (err) {
             e.target.disabled = false;
             handleErr(err);
@@ -834,18 +834,18 @@
     for (let at = C.MILESTONE_FIRST; at <= last; at += C.MILESTONE_STEP) {
       const row = letterRow(at) || {};
       if (isHim()) {
-        chips += `<button class="chip${owed >= at ? '' : ' locked'}" data-letter="${at}">${row.note ? '💌' : '✍️'} ${at}${row.openedAt ? ' <small>opened</small>' : ''}</button>`;
+        chips += `<button class="chip${owed >= at ? '' : ' locked'}" data-letter="${at}">${row.note ? '✉️' : '✍️'} ${at}${row.openedAt ? ' <small>opened</small>' : ''}</button>`;
       } else if (owed < at) {
         chips += `<button class="chip locked" data-letter="${at}">🔒 ${at}</button>`;
       } else if (!row.openedAt) {
         chips += `<button class="chip fresh" data-letter="${at}">✉️ ${at} new!</button>`;
       } else {
-        chips += `<button class="chip" data-letter="${at}">💌 ${at}</button>`;
+        chips += `<button class="chip" data-letter="${at}">✉️ ${at}</button>`;
       }
     }
     $('surprises').innerHTML = isHim()
-      ? `<h2>💌 Your sealed notes</h2><p class="muted" style="margin:0 0 10px;font-size:14px">${esc(C.HER)} only sees each one when she reaches it.</p><div class="chips">${chips}</div>`
-      : `<h2>💌 Surprises</h2><div class="chips">${chips}</div>`;
+      ? `<h2>✉️ Your sealed notes</h2><p class="muted" style="margin:0 0 10px;font-size:14px">${esc(C.HER)} only sees each one when she reaches it.</p><div class="chips">${chips}</div>`
+      : `<h2>✉️ Surprises</h2><div class="chips">${chips}</div>`;
   }
   $('surprises').addEventListener('click', (e) => {
     const c = e.target.closest('[data-letter]');
@@ -1060,7 +1060,7 @@
             await renderAll({ animate: true });
             sfx.yay();
             burst($('tallyNum'), { colors: ['#B8F2E6', '#7FD9C4', '#FFB5C8', '#ffffff'] });
-            undoToast(`Chalo, ${plural(res.event.qty, 'ice cream')} paid off 💕`);
+            undoToast(`Chalo, ${plural(res.event.qty, 'ice cream')} paid off 🍦`);
           } catch (err) {
             e.target.disabled = false;
             if (err.status === 409) { closeSheet(true); toast('Nothing owed right now 🎉'); refresh(); }
@@ -1266,7 +1266,7 @@
       $('spinBtn').disabled = false;
       $('spinBtn').textContent = 'Spin again';
       const f = slice.f;
-      const fav = f.sparkle ? (isHim() ? ' · her fav 💕' : ' · your fav 💕') : '';
+      const fav = f.sparkle ? (isHim() ? ' · her fav ⭐' : ' · your fav ⭐') : '';
       const r = $('wheelResult');
       r.textContent = `Aaj ka flavour: ${f.name} ${f.emoji}${fav}`;
       r.classList.remove('pop');

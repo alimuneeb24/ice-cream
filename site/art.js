@@ -259,9 +259,9 @@
     return (
       `<svg class="balloon-svg" viewBox="0 0 60 120" aria-hidden="true">` +
       `<path d="M30 52 Q24 72 32 88 Q38 102 30 118" fill="none" stroke="${INK}" stroke-width="2" stroke-linecap="round"/>` +
-      `<path d="M30 52 C10 38 2 26 8 14 C14 2 28 4 30 16 C32 4 46 2 52 14 C58 26 50 38 30 52 Z" fill="#FF9DBB" stroke="${INK}" stroke-width="3" stroke-linejoin="round"/>` +
-      `<path d="M14 16 Q16 10 22 10" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".8"/>` +
-      `<path d="M27 52 L33 52 L30 57 Z" fill="#FF9DBB" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>` +
+      `<ellipse cx="30" cy="28" rx="21" ry="25" fill="#B8F2E6" stroke="${INK}" stroke-width="3"/>` +
+      `<path d="M17 18 Q19 11 26 9" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".8"/>` +
+      `<path d="M27 53 L33 53 L30 58 Z" fill="#B8F2E6" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>` +
       `</svg>`
     );
   }
@@ -291,10 +291,11 @@
   function envelope() {
     return (
       `<svg class="envelope-svg" viewBox="0 0 140 100" aria-hidden="true">` +
-      `<rect x="6" y="20" width="128" height="76" rx="10" fill="#FFE3EC" stroke="${INK}" stroke-width="3.5"/>` +
+      `<rect x="6" y="20" width="128" height="76" rx="10" fill="#F0E8FF" stroke="${INK}" stroke-width="3.5"/>` +
       `<path d="M8 92 L58 56 M132 92 L82 56" stroke="${INK}" stroke-width="3" stroke-linecap="round" fill="none"/>` +
-      `<path class="env-flap" d="M8 24 Q8 20 12 20 H128 Q132 20 132 24 L76 64 Q70 68 64 64 Z" fill="#FFB5C8" stroke="${INK}" stroke-width="3.5" stroke-linejoin="round"/>` +
-      `<path class="env-seal" d="M70 70 C60 62 56 56 59 51 C62 46 68 47 70 52 C72 47 78 46 81 51 C84 56 80 62 70 70 Z" fill="#F58FAD" stroke="${INK}" stroke-width="2.5" stroke-linejoin="round"/>` +
+      `<path class="env-flap" d="M8 24 Q8 20 12 20 H128 Q132 20 132 24 L76 64 Q70 68 64 64 Z" fill="#CDB4FF" stroke="${INK}" stroke-width="3.5" stroke-linejoin="round"/>` +
+      `<g class="env-seal"><circle cx="70" cy="60" r="11" fill="#FFD77A" stroke="${INK}" stroke-width="2.5"/>` +
+      `<circle cx="70" cy="60" r="5.5" fill="none" stroke="#fff" stroke-width="2" opacity=".75"/></g>` +
       `</svg>`
     );
   }

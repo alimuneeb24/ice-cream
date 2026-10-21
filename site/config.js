@@ -47,7 +47,7 @@
       { at: 50, key: 'flowers', name: 'Flower pots by the bell', emoji: '🌸' },
       { at: 60, key: 'cat', name: 'A parlour cat', emoji: '🐱' },
       { at: 70, key: 'open', name: 'A glowing OPEN sign', emoji: '💡' },
-      { at: 80, key: 'balloon', name: 'A heart balloon', emoji: '🎈' },
+      { at: 80, key: 'balloon', name: 'A balloon', emoji: '🎈' },
       { at: 90, key: 'rainbow', name: 'Rainbow sprinkles on everything', emoji: '🌈' },
       { at: 100, key: 'golden', name: 'Golden cones and a crown for the bell', emoji: '👑' },
     ],
