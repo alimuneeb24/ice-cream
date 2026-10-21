@@ -10,7 +10,7 @@
   window.APP_CONFIG = {
     // Local demo goes through dev/serve.py (which forwards /api to `wrangler dev`);
     // production talks to the deployed Worker.
-    API_URL: isLocal ? `${location.origin}/api` : 'https://icecream-tracker.REPLACE_ME.workers.dev',
+    API_URL: isLocal ? `${location.origin}/api` : 'https://icecream-tracker.muneebali.workers.dev',
 
     HER: 'Fiza',
     HIM: 'Muneeb',
