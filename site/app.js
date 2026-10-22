@@ -27,6 +27,15 @@
   const rand = (a, b) => a + Math.random() * (b - a);
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const now = () => Date.now() + clockOffset;
+  const isMyDevice = () => store.get('mine') === '1';
+
+  // Fiza's visit log: while the page is on screen it checks in every poll, so the
+  // admin page can show time spent. (Only set when the server logged this visit.)
+  let openId = null;
+  function pingOpen() {
+    if (!openId || document.visibilityState !== 'visible') return;
+    api(`/hello/${openId}`, 'POST', {}).then((r) => { openId = r.openId || openId; }).catch(() => {});
+  }
   const isHim = () => state && state.me === C.HIM;
 
   // ---------- API ----------
@@ -251,6 +260,11 @@
 
   function unlock(s) {
     setState(s);
+    // Logging in as Muneeb marks this browser as his; logins with Fiza's PIN on his
+    // browsers don't count as her opens. The flag never leaves this browser.
+    if (s.me === C.HIM) store.set('mine', '1');
+    openId = null;
+    api('/hello', 'POST', { mine: isMyDevice() }).then((r) => { openId = r.openId || null; }).catch(() => {});
     wrongCount = 0;
     sfx.yay();
     clearTimeout(alooTimer);
@@ -268,6 +282,7 @@
   }
 
   function lockOut() {
+    openId = null;
     pin = null;
     clearInterval(pollTimer);
     closeSheet(true);
@@ -299,9 +314,10 @@
     coneSig = null;
     renderAll({ intro: true });
     setTimeout(maybeLetters, 1700);
-    if (location.hash === '#cases') showCases(false);
+    $('adminBtn').hidden = !isHim();
+    showView(viewFromHash(), false);
     clearInterval(pollTimer);
-    pollTimer = setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, C.POLL_MS);
+    pollTimer = setInterval(() => { if (document.visibilityState === 'visible') { refresh(); pingOpen(); } }, C.POLL_MS);
   }
 
   async function refresh() {
@@ -325,7 +341,7 @@
       if (e.status === 401 || (e.status === 429 && e.data.error === 'locked')) lockOut();
     }
   }
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state) refresh(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && state) { refresh(); pingOpen(); } });
 
   $('soundBtn').textContent = soundOn ? '🔊' : '🔇';
   $('soundBtn').addEventListener('click', () => {
@@ -347,6 +363,7 @@
     renderShops();
     updateBell();
     if (!$('viewCases').hidden) renderCases();
+    renderAdmin();
     const mode = opts.intro ? 'intro' : opts.animate ? 'animate' : 'instant';
     standQueue = standQueue.then(() => drawStand(p, mode)).then(() => setTally(state.totals.pending));
     return standQueue;
@@ -606,6 +623,7 @@
     btn.classList.toggle('frozen', frozen);
     $('ringProgress').style.strokeDashoffset = RING_LEN * (1 - left / C.COOLDOWN_MS);
     $('bellHint').textContent = frozen ? `Bell is frozen ❄️ ${fmtLeft(left)}` : 'tap the bell · +2 ice creams';
+    updateAdminBell();
     btn.setAttribute('aria-label', frozen
       ? `Bell is frozen for ${fmtLeft(left)}`
       : `Ring the bell: ${C.HIM} said baad mein bataonga, add 2 ice creams`);
@@ -857,14 +875,204 @@
     showLetter(at);
   });
 
-  // Muneeb-only: reset Fiza's PIN (her old one stops working straight away).
-  function renderSettings() {
-    $('settings').innerHTML = isHim()
-      ? `<h2>🔑 ${esc(C.HER)}'s PIN</h2><p class="muted">Forgot it? Give her a new one.</p><button class="btn btn-small btn-plain" id="resetPinBtn">Reset ${esc(C.HER)}'s PIN</button>`
-      : '';
-    const b = $('resetPinBtn');
-    if (b) b.onclick = openPinReset;
+  // ---------- admin page (Muneeb only; the server enforces it too) ----------
+  function renderAdmin() {
+    if (!isHim() || $('viewAdmin').hidden) return;
+    // Don't wipe the number he's typing when a background refresh lands.
+    if (document.activeElement && document.activeElement.id === 'archivesIn') return;
+    const { pending, owed, eaten } = state.totals;
+    const archives = state.events.find((e) => e.by === 'system' && e.type === 'owe');
+    const rows = state.events.filter((e) => e.by !== 'system');
+    const shopName = (id) => (state.shops.find((s) => s.id === id) || {}).name;
+    const letters = [];
+    for (let at = C.MILESTONE_FIRST; at <= Math.max(nextMilestone(), ...(state.milestones || []).map((m) => m.at)); at += C.MILESTONE_STEP) {
+      letters.push({ at, ...(letterRow(at) || {}) });
+    }
+
+    // Fiza's opens per day, bucketed in Karachi time.
+    const opens = state.opens || [];
+    const pkDay = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' });
+    const perDay = Array.from({ length: 7 }, (_, i) => {
+      const t = now() - i * 86400000;
+      return { t, i, n: opens.filter((o) => pkDay(o.at) === pkDay(t)).length };
+    });
+    const maxN = Math.max(1, ...perDay.map((d) => d.n));
+
+    // One collapsible folder per day (Karachi time), newest first; today starts open.
+    const spent = (o) => Math.max(0, (o.lastSeen || o.at) - o.at);
+    const fmtSpent = (ms) => {
+      const m = Math.round(ms / 60000);
+      return m < 1 ? '<1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+    };
+    const regionName = (() => { try { return new Intl.DisplayNames(['en'], { type: 'region' }); } catch { return null; } })();
+    const country = (cc) => (cc && /^[A-Z]{2}$/.test(cc)
+      ? `${String.fromCodePoint(...[...cc].map((c) => 127397 + c.charCodeAt(0)))} ${esc((regionName && regionName.of(cc)) || cc)}`
+      : '🌐 Unknown');
+    const byDay = new Map();
+    opens.forEach((o) => {
+      const k = pkDay(o.at);
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(o);
+    });
+    const todayKey = pkDay(now());
+    const yesterdayKey = pkDay(now() - 86400000);
+
+    // Summary stats over the last 7 days (Karachi time).
+    const week = opens.filter((o) => o.at > now() - 7 * 86400000);
+    const weekTime = week.reduce((s, o) => s + spent(o), 0);
+    const hours = {};
+    week.forEach((o) => {
+      const h = Number(new Date(o.at).toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Karachi' })) % 24;
+      hours[h] = (hours[h] || 0) + 1;
+    });
+    const busiest = Object.entries(hours).sort((a, b) => b[1] - a[1])[0];
+    const hourLabel = (h) => new Date(Date.UTC(2000, 0, 1, h)).toLocaleTimeString('en-US', { hour: 'numeric', timeZone: 'UTC' }).toLowerCase();
+    let streak = 0;
+    while (byDay.has(pkDay(now() - streak * 86400000))) streak++;
+    const visitStats = [
+      [(week.length / 7).toFixed(1), 'visits a day'],
+      [week.length ? fmtSpent(weekTime / week.length) : '—', 'average visit'],
+      [fmtSpent(weekTime), 'total this week'],
+      [busiest ? `${hourLabel(+busiest[0])}–${hourLabel((+busiest[0] + 1) % 24)}` : '—', 'busiest hour'],
+      [plural(streak, 'day'), 'in a row'],
+    ];
+    const dayFolders = [...byDay.entries()].map(([k, list]) => {
+      const label = k === todayKey ? 'Today' : k === yesterdayKey ? 'Yesterday'
+        : new Date(list[0].at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Karachi' });
+      const total = list.reduce((s, o) => s + spent(o), 0);
+      return `<details class="day-folder"${k === todayKey ? ' open' : ''}>
+        <summary>📁 <b>${label}</b> · ${plural(list.length, 'visit')} · ${fmtSpent(total)}</summary>
+        <ul class="admin-list">
+          ${list.map((o) => `<li>
+            <span>${new Date(o.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Karachi' }).toLowerCase()} · ${country(o.country)} · ${fmtSpent(spent(o))}</span>
+            <button class="link-btn" data-not-her="${o.id}">That was me</button>
+          </li>`).join('')}
+        </ul>
+      </details>`;
+    }).join('');
+    const dayName = (d) => (d.i === 0 ? 'Today' : d.i === 1 ? 'Yesterday'
+      : new Date(d.t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', timeZone: 'Asia/Karachi' }));
+
+    $('admin').innerHTML = `
+      <section class="admin-card">
+        <h2>👀 ${esc(C.HER)}'s visits</h2>
+        <p><b>${perDay[0].n}</b> today · ${perDay[1].n} yesterday · ${perDay.reduce((s, d) => s + d.n, 0)} in the last 7 days</p>
+        <ul class="opens-bars">
+          ${perDay.map((d) => `<li><span>${dayName(d)}</span><i style="--w:${(d.n / maxN) * 100}%"></i><b>${d.n}</b></li>`).join('')}
+        </ul>
+        <div class="visit-stats">
+          ${visitStats.map(([b, s]) => `<div><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('')}
+        </div>
+        <h3 class="opens-h">Visits by day</h3>
+        ${dayFolders || '<p class="muted small">No visits yet.</p>'}
+        <div class="admin-row device-row">
+          <span>${isMyDevice() ? '📱 This device: <b>yours ✓</b>' : '📱 This device: <b>not marked</b>'}</span>
+          <button class="btn btn-small btn-plain" data-admin="mine">${isMyDevice() ? 'Unmark' : 'This device is mine'}</button>
+        </div>
+        <p class="muted small">Counts logins with her PIN, except on devices marked as yours. Saves the time, country and time spent (Karachi time). Country follows her VPN.</p>
+      </section>
+
+      <section class="admin-card">
+        <h2>🍦 Count</h2>
+        <p><b>${pending}</b> pending · ${owed} owed in total · ${eaten} eaten</p>
+        <label for="archivesIn">Starting count (The Archives)</label>
+        <div class="admin-row">
+          <input type="number" id="archivesIn" min="0" max="999" inputmode="numeric" value="${archives ? archives.qty : 0}">
+          <button class="btn btn-small" data-admin="archives">Save</button>
+        </div>
+        <p class="muted small">Everything from before the website. Changing it moves the total up or down.</p>
+      </section>
+
+      <section class="admin-card">
+        <h2>🔔 Bell</h2>
+        <p id="adminBell"></p>
+        <button class="btn btn-small" data-admin="unfreeze" id="adminUnfreeze">Unfreeze now</button>
+      </section>
+
+      <section class="admin-card admin-wide">
+        <h2>📜 Rings & ice creams</h2>
+        <p class="muted small">Delete anything that shouldn't be there, e.g. an accidental ring. Tap Delete twice to confirm.</p>
+        <ul class="admin-list">
+          ${rows.map((e) => `<li>
+            <span><b>${e.type === 'owe' ? '🔔 +2' : `😋 −${e.qty}`}</b> · ${esc(e.by)} · ${fmtDate(e.createdAt)}${e.type === 'paid' && shopName(e.shopId) ? ` · ${esc(shopName(e.shopId))}` : ''}${e.note ? `<br><span class="muted">“${esc(e.note)}”</span>` : ''}</span>
+            <button class="link-btn danger" data-del="${e.id}">Delete</button>
+          </li>`).join('') || '<li class="muted">Nothing yet.</li>'}
+        </ul>
+      </section>
+
+      <section class="admin-card">
+        <h2>✉️ Envelopes</h2>
+        <ul class="admin-list">
+          ${letters.map((l) => `<li>
+            <span><b>${l.at}</b> · ${l.note ? 'note written' : 'no note'} · ${l.openedAt ? `opened ${fmtDate(l.openedAt)}` : owed >= l.at ? 'not opened yet' : 'locked'}</span>
+            <span class="admin-actions">
+              <button class="link-btn" data-letter-edit="${l.at}">Edit</button>
+              ${l.openedAt ? `<button class="link-btn" data-reseal="${l.at}">Re-seal</button>` : ''}
+            </span>
+          </li>`).join('') || '<li class="muted">No envelopes yet.</li>'}
+        </ul>
+        <p class="muted small">Re-seal makes the envelope pop up for ${esc(C.HER)} again next time she opens the site.</p>
+      </section>
+
+      <section class="admin-card">
+        <h2>🔑 ${esc(C.HER)}'s PIN</h2>
+        <p class="muted small">Forgot it? Give her a new one. Her old PIN stops working right away.</p>
+        <button class="btn btn-small btn-plain" data-admin="pin">Reset ${esc(C.HER)}'s PIN</button>
+      </section>`;
+    updateAdminBell();
   }
+
+  function updateAdminBell() {
+    const el = $('adminBell');
+    if (!el) return;
+    const left = cooldownLeft();
+    el.textContent = left > 0 ? `Frozen for another ${fmtLeft(left)} ❄️` : 'Ready to ring';
+    $('adminUnfreeze').disabled = left <= 0;
+  }
+
+  async function adminCall(path, method, body, done) {
+    try {
+      const res = await api(path, method, body);
+      setState(res.state);
+      renderAll();
+      toast(done);
+    } catch (err) {
+      if (err.status === 409 && err.data.error === 'would_go_negative') {
+        toast("Can't do that 🙈", { sub: 'Eaten would end up higher than owed' });
+      } else if (err.status === 400) {
+        toast('Hmm, that number looks off', { sub: err.data.message });
+      } else handleErr(err);
+    }
+  }
+
+  $('admin').addEventListener('click', (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if (t.dataset.admin === 'archives') {
+      const qty = Number($('archivesIn').value);
+      return adminCall('/admin/archives', 'PATCH', { qty }, `Starting count set to ${qty}`);
+    }
+    if (t.dataset.admin === 'unfreeze') return adminCall('/admin/unfreeze', 'POST', {}, 'Bell unfrozen 🔔');
+    if (t.dataset.admin === 'pin') return openPinReset();
+    if (t.dataset.admin === 'mine') {
+      if (isMyDevice()) store.del('mine');
+      else store.set('mine', '1');
+      renderAdmin();
+      return toast(isMyDevice() ? 'This device is marked as yours ✓' : 'This device is no longer marked');
+    }
+    if (t.dataset.notHer) return adminCall(`/admin/opens/${t.dataset.notHer}`, 'DELETE', null, 'Removed from her opens');
+    if (t.dataset.letterEdit) return openLetterEditor(+t.dataset.letterEdit);
+    if (t.dataset.reseal) return adminCall(`/admin/milestones/${t.dataset.reseal}/reseal`, 'POST', {}, 'Envelope re-sealed ✉️');
+    if (t.dataset.del) {
+      if (t.dataset.sure !== '1') {
+        t.dataset.sure = '1';
+        t.textContent = 'Sure? Tap again';
+        setTimeout(() => { if (t.isConnected) { t.dataset.sure = ''; t.textContent = 'Delete'; } }, 3000);
+        return;
+      }
+      return adminCall(`/admin/events/${t.dataset.del}`, 'DELETE', null, 'Deleted 🗑️');
+    }
+  });
 
   function openPinReset() {
     openSheet(
@@ -1122,7 +1330,6 @@
       [selfReports, `self-reports by ${C.HIM} 🫡`],
     ];
     renderSurprises();
-    renderSettings();
     $('stats').innerHTML = stats.map(([b, s]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
 
     const shopName = (id) => (state.shops.find((s) => s.id === id) || {}).name;
@@ -1170,26 +1377,28 @@
     openNoteSheet(ev);
   });
 
-  function showCases(push = true) {
-    $('viewMain').hidden = true;
-    $('viewCases').hidden = false;
+  // Views: main parlour, #cases, and #admin (Muneeb only).
+  function showView(name, push = true) {
+    if (name === 'admin' && !isHim()) name = 'main';
+    $('viewMain').hidden = name !== 'main';
+    $('viewCases').hidden = name !== 'cases';
+    $('viewAdmin').hidden = name !== 'admin';
     $('countPill').classList.remove('show');
-    renderCases();
+    if (name === 'cases') renderCases();
+    if (name === 'admin') renderAdmin();
     scrollTo(0, 0);
-    if (push) history.pushState({ v: 'cases' }, '', '#cases');
+    if (name === 'main' && map) setTimeout(() => map.invalidateSize(), 60);
+    if (push && name !== 'main') history.pushState({ v: name }, '', '#' + name);
   }
-  function showMain() {
-    $('viewCases').hidden = true;
-    $('viewMain').hidden = false;
-    scrollTo(0, 0);
-    if (map) setTimeout(() => map.invalidateSize(), 60);
-  }
-  $('openCases').addEventListener('click', () => showCases());
-  $('backBtn').addEventListener('click', () => {
-    if (history.state && history.state.v === 'cases') history.back();
-    else { history.replaceState(null, '', location.pathname); showMain(); }
-  });
-  addEventListener('popstate', () => { if (location.hash === '#cases') showCases(false); else showMain(); });
+  const showCases = (push) => showView('cases', push);
+  const viewFromHash = () => ({ '#cases': 'cases', '#admin': 'admin' })[location.hash] || 'main';
+  $('openCases').addEventListener('click', () => showView('cases'));
+  $('adminBtn').addEventListener('click', () => showView('admin'));
+  document.querySelectorAll('[data-back]').forEach((b) => b.addEventListener('click', () => {
+    if (history.state && history.state.v) history.back();
+    else { history.replaceState(null, '', location.pathname); showView('main'); }
+  }));
+  addEventListener('popstate', () => showView(viewFromHash(), false));
 
   // Sticky count pill once the bell scrolls away.
   new IntersectionObserver(([entry]) => {

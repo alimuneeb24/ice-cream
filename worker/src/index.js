@@ -13,6 +13,10 @@ const MAX_LETTER = 1000;
 const MILESTONE_STEP = 10; // a surprise every 10 ice creams owed, starting at 20
 const MILESTONE_FIRST = 20;
 const MILESTONE_LAST = 1000;
+// Muneeb can unfreeze the bell: rings older than this setting don't count toward the cooldown.
+const COOLDOWN_RESET_SQL = `COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'cooldown_reset_at'), 0)`;
+const OPENS_KEEP_MS = 90 * 24 * 60 * 60 * 1000; // Fiza's visit log is kept for 90 days
+const OPEN_GAP_MS = 2 * 60 * 1000; // away longer than this = a new visit
 const MAX_PIN_TRIES = 10; // wrong PINs from one IP before it gets locked out
 const LOCKOUT_MS = 15 * 60 * 1000;
 
@@ -103,6 +107,22 @@ async function route(request, env, me) {
     return resetFizaPin(db, env, me, await readBody(request));
   }
 
+  if (method === "POST" && path === "/hello") return recordOpen(db, me, request, await readBody(request));
+  if (method === "POST" && (m = path.match(/^\/hello\/(\d+)$/))) return pingOpen(db, me, request, Number(m[1]));
+
+  // Admin (Muneeb only)
+  if (path.startsWith("/admin/") && me !== "Muneeb") throw new HttpError(403, { error: "muneeb_only" });
+  if (method === "DELETE" && (m = path.match(/^\/admin\/events\/(\d+)$/))) return adminDeleteEvent(db, me, Number(m[1]));
+  if (method === "PATCH" && path === "/admin/archives") return adminSetArchives(db, me, await readBody(request));
+  if (method === "POST" && path === "/admin/unfreeze") return adminUnfreeze(db, me);
+  if (method === "DELETE" && (m = path.match(/^\/admin\/opens\/(\d+)$/))) {
+    await db.prepare(`DELETE FROM opens WHERE id = ?`).bind(Number(m[1])).run(); // "That was me"
+    return ok(await getState(db, me));
+  }
+  if (method === "POST" && (m = path.match(/^\/admin\/milestones\/(\d+)\/reseal$/))) {
+    return adminReseal(db, me, milestone(m[1]));
+  }
+
   throw new HttpError(404, { error: "not_found" });
 }
 
@@ -119,7 +139,8 @@ async function owe(db, me, body) {
     .prepare(
       `INSERT INTO events (type, qty, by, note, created_at)
        SELECT 'owe', ?1, ?2, ?3, ?4
-       WHERE NOT EXISTS (SELECT 1 FROM events WHERE type = 'owe' AND created_at > ?5)
+       WHERE NOT EXISTS (SELECT 1 FROM events WHERE type = 'owe' AND created_at > ?5
+                           AND created_at > ${COOLDOWN_RESET_SQL})
        RETURNING *`
     )
     .bind(OWE_QTY, me, note, now, now - COOLDOWN_MS)
@@ -316,6 +337,87 @@ async function resetFizaPin(db, env, me, body) {
   return ok(await getState(db, me));
 }
 
+// Called once per login. Logs Fiza's visits: logins with her PIN, except from a
+// browser Muneeb has marked as his (`mine`, a flag kept in his own browser).
+async function recordOpen(db, me, request, body) {
+  if (me !== "Fiza" || body.mine === true) return { body: { ok: true } };
+  return { body: { ok: true, openId: await startOpen(db, request) } };
+}
+
+async function startOpen(db, request) {
+  const now = Date.now();
+  const [row] = await db.batch([
+    db.prepare(`INSERT INTO opens (at, country, last_seen) VALUES (?1, ?2, ?1) RETURNING id`)
+      .bind(now, request.cf?.country || null),
+    db.prepare(`DELETE FROM opens WHERE at < ?`).bind(now - OPENS_KEEP_MS),
+  ]);
+  return row.results[0].id;
+}
+
+// Check-in every ~20s while the page is on screen. After a gap longer than
+// OPEN_GAP_MS (she left and came back) it starts a new visit instead.
+async function pingOpen(db, me, request, id) {
+  if (me !== "Fiza") return { body: { ok: true } };
+  const now = Date.now();
+  const res = await db
+    .prepare(`UPDATE opens SET last_seen = ?1 WHERE id = ?2 AND last_seen >= ?3`)
+    .bind(now, id, now - OPEN_GAP_MS)
+    .run();
+  if (res.meta.changes) return { body: { ok: true, openId: id } };
+  return { body: { ok: true, openId: await startOpen(db, request) } };
+}
+
+// ---- Admin handlers (route() has already checked me === "Muneeb") ----
+
+// Delete any ring or ice-cream entry, as long as eaten never ends up above owed.
+async function adminDeleteEvent(db, me, id) {
+  const row = await db.prepare(`SELECT * FROM events WHERE id = ?`).bind(id).first();
+  if (!row) throw new HttpError(404, { error: "not_found" });
+  if (row.by === "system") badRequest("edit The Archives instead of deleting it");
+  const del = await db
+    .prepare(
+      `DELETE FROM events WHERE id = ?1
+         AND (type = 'paid' OR (SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) FROM events) >= qty)`
+    )
+    .bind(id)
+    .run();
+  if (!del.meta.changes) throw new HttpError(409, { error: "would_go_negative" });
+  return ok(await getState(db, me), { event: toEvent(row) });
+}
+
+// Set the starting count (The Archives), never below what's already been eaten.
+async function adminSetArchives(db, me, body) {
+  const qty = body.qty;
+  if (!Number.isInteger(qty) || qty < 0 || qty > 999) badRequest("qty must be an integer from 0 to 999");
+  const upd = await db
+    .prepare(
+      `UPDATE events SET qty = ?1
+       WHERE id = (SELECT id FROM events WHERE by = 'system' AND type = 'owe' ORDER BY id LIMIT 1)
+         AND (SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) FROM events) - qty + ?1 >= 0`
+    )
+    .bind(qty)
+    .run();
+  if (!upd.meta.changes) throw new HttpError(409, { error: "would_go_negative" });
+  return ok(await getState(db, me));
+}
+
+async function adminUnfreeze(db, me) {
+  await db
+    .prepare(
+      `INSERT INTO settings (key, value) VALUES ('cooldown_reset_at', ?1)
+       ON CONFLICT (key) DO UPDATE SET value = ?1`
+    )
+    .bind(String(Date.now()))
+    .run();
+  return ok(await getState(db, me));
+}
+
+// Mark an envelope unopened so it pops up for Fiza again.
+async function adminReseal(db, me, at) {
+  await db.prepare(`UPDATE milestones SET opened_at = NULL WHERE at = ?`).bind(at).run();
+  return ok(await getState(db, me));
+}
+
 function milestone(raw) {
   const at = Number(raw);
   if (at < MILESTONE_FIRST || at > MILESTONE_LAST || at % MILESTONE_STEP) {
@@ -328,11 +430,16 @@ function milestone(raw) {
 // State
 
 async function getState(db, me) {
-  const [events, shops, letters] = await db.batch([
+  const [events, shops, letters, reset, opens] = await db.batch([
     db.prepare(`SELECT * FROM events ORDER BY created_at DESC, id DESC`),
     db.prepare(`SELECT * FROM shops ORDER BY created_at ASC, id ASC`),
     db.prepare(`SELECT * FROM milestones ORDER BY at ASC`),
+    db.prepare(`SELECT ${COOLDOWN_RESET_SQL} AS t`),
+    // Fiza's open times for the admin page (Muneeb only, last 30 days).
+    db.prepare(`SELECT id, at, country, last_seen AS lastSeen FROM opens WHERE ?1 = 'Muneeb' AND at > ?2 ORDER BY at DESC`)
+      .bind(me, Date.now() - 30 * 24 * 60 * 60 * 1000),
   ]);
+  const cooldownResetAt = reset.results[0]?.t ?? 0;
 
   const now = Date.now();
   let owed = 0;
@@ -346,7 +453,7 @@ async function getState(db, me) {
       eaten += e.qty;
     }
   }
-  const until = lastOwe === null ? null : lastOwe + COOLDOWN_MS;
+  const until = lastOwe === null || lastOwe <= cooldownResetAt ? null : lastOwe + COOLDOWN_MS;
 
   return {
     me,
@@ -359,6 +466,7 @@ async function getState(db, me) {
     milestones: letters.results
       .filter((r) => me === "Muneeb" || r.at <= owed)
       .map((r) => ({ at: r.at, note: r.note, openedAt: r.opened_at })),
+    ...(me === "Muneeb" ? { opens: opens.results } : {}),
   };
 }
 

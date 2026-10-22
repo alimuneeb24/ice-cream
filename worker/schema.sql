@@ -52,3 +52,15 @@ CREATE TABLE IF NOT EXISTS pin_attempts (
   locked_until INTEGER,
   updated_at   INTEGER NOT NULL
 );
+
+-- Fiza's visits (she knows they're logged): start time, country, and the last
+-- check-in while the page was on screen (so last_seen - at = time spent).
+-- No IP, city or device. Logins with her PIN on browsers Muneeb has marked as
+-- his aren't recorded. Kept for 90 days.
+CREATE TABLE IF NOT EXISTS opens (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        INTEGER NOT NULL,
+  country   TEXT,
+  last_seen INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_opens_at ON opens (at);

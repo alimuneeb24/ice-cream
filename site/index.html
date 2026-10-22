@@ -52,6 +52,7 @@
     <header class="topbar">
       <span class="hello" id="hello"></span>
       <div class="top-actions">
+        <button class="icon-btn" id="adminBtn" aria-label="Admin" hidden>🛠️</button>
         <button class="icon-btn" id="soundBtn" aria-label="Sound on">🔊</button>
         <button class="icon-btn" id="lockBtn" aria-label="Lock">🔒</button>
       </div>
@@ -123,7 +124,7 @@
     </main>
 
     <main class="view view-cases" id="viewCases" hidden>
-      <button class="back" id="backBtn">← Back to the parlour</button>
+      <button class="back" id="backBtn" data-back>← Back to the parlour</button>
       <h1 class="cases-title">📁 Case files</h1>
       <div class="cases-grid">
         <aside>
@@ -134,9 +135,15 @@
           <section class="surprises" id="surprises"></section>
           <div class="stats" id="stats"></div>
           <ol class="cases" id="cases"></ol>
-          <section class="settings" id="settings"></section>
         </div>
       </div>
+    </main>
+
+    <main class="view view-admin" id="viewAdmin" hidden>
+      <button class="back" data-back>← Back to the parlour</button>
+      <h1 class="cases-title">🛠️ Admin</h1>
+      <p class="muted" style="margin:-6px 0 16px">Only you can see this page.</p>
+      <div class="admin-grid" id="admin"></div>
     </main>
   </div>
 
