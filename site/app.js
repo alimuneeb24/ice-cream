@@ -1015,9 +1015,12 @@
       </section>
 
       <section class="admin-card">
-        <h2>🔑 ${esc(C.HER)}'s PIN</h2>
-        <p class="muted small">Forgot it? Give her a new one. Her old PIN stops working right away.</p>
-        <button class="btn btn-small btn-plain" data-admin="pin">Reset ${esc(C.HER)}'s PIN</button>
+        <h2>🔑 PINs</h2>
+        <p class="muted small">The old PIN stops working right away.</p>
+        <div class="admin-row" style="flex-wrap:wrap">
+          <button class="btn btn-small btn-plain" data-admin="pin-me">Change my PIN</button>
+          <button class="btn btn-small btn-plain" data-admin="pin">Reset ${esc(C.HER)}'s PIN</button>
+        </div>
       </section>`;
     updateAdminBell();
   }
@@ -1053,7 +1056,8 @@
       return adminCall('/admin/archives', 'PATCH', { qty }, `Starting count set to ${qty}`);
     }
     if (t.dataset.admin === 'unfreeze') return adminCall('/admin/unfreeze', 'POST', {}, 'Bell unfrozen 🔔');
-    if (t.dataset.admin === 'pin') return openPinReset();
+    if (t.dataset.admin === 'pin') return openPinChange('fiza');
+    if (t.dataset.admin === 'pin-me') return openPinChange('muneeb');
     if (t.dataset.admin === 'mine') {
       if (isMyDevice()) store.del('mine');
       else store.set('mine', '1');
@@ -1074,34 +1078,45 @@
     }
   });
 
-  function openPinReset() {
+  // who: 'fiza' (reset hers) or 'muneeb' (change his own, typed twice).
+  function openPinChange(who) {
+    const mine = who === 'muneeb';
+    const digits = (id, label, ph) => `<label for="${id}">${label}</label>
+       <input type="${mine ? 'password' : 'text'}" id="${id}" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="${ph}">`;
     openSheet(
-      `<h3>New PIN for ${esc(C.HER)} 🔑</h3>
-       <p>Her old PIN stops working right away. Don't forget to tell her!</p>
-       <label for="newPin">4 digits</label>
-       <input type="text" id="newPin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" placeholder="e.g. 0214">
+      `<h3>${mine ? 'Change my PIN 🔑' : `New PIN for ${esc(C.HER)} 🔑`}</h3>
+       <p>${mine ? 'Your old PIN stops working right away. Pick one you won\'t forget!' : "Her old PIN stops working right away. Don't forget to tell her!"}</p>
+       ${digits('newPin', mine ? 'New PIN (4 digits)' : '4 digits', mine ? '••••' : 'e.g. 0214')}
+       ${mine ? digits('newPin2', 'Type it again', '••••') : ''}
        <p class="muted" id="pinErr" style="min-height:22px;margin:8px 0 0"></p>
        <div class="sheet-actions">
          <button class="btn btn-plain" data-act="cancel">Cancel</button>
          <button class="btn" data-act="save">Set PIN</button>
        </div>`,
       (root) => {
-        const input = root.querySelector('#newPin');
-        input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); });
+        const inputs = [...root.querySelectorAll('input')];
+        inputs.forEach((i) => i.addEventListener('input', () => { i.value = i.value.replace(/\D/g, '').slice(0, 4); }));
         root.querySelector('[data-act="cancel"]').onclick = () => closeSheet();
         root.querySelector('[data-act="save"]').onclick = async (e) => {
           const pinErr = root.querySelector('#pinErr');
-          if (!/^\d{4}$/.test(input.value)) { pinErr.textContent = 'Needs exactly 4 digits'; return; }
+          const value = inputs[0].value;
+          if (!/^\d{4}$/.test(value)) { pinErr.textContent = 'Needs exactly 4 digits'; return; }
+          if (mine && inputs[1].value !== value) { pinErr.textContent = "Those don't match"; return; }
           e.target.disabled = true;
           try {
-            const res = await api('/pin/fiza', 'POST', { pin: input.value });
+            const res = await api(`/pin/${who}`, 'POST', { pin: value });
+            if (mine) pin = value; // keep this session working with the new PIN
             setState(res.state);
             closeSheet(true);
-            toast(`${C.HER}'s new PIN is set 🔑`, { sub: 'Tell her before she gets locked out 🙈', ms: 5000 });
+            if (mine) toast('Your new PIN is set 🔑', { sub: "Don't forget it 🙈", ms: 5000 });
+            else toast(`${C.HER}'s new PIN is set 🔑`, { sub: 'Tell her before she gets locked out 🙈', ms: 5000 });
           } catch (err) {
             e.target.disabled = false;
-            if (err.status === 400) pinErr.textContent = /different/.test(err.data.message) ? "That's your PIN 🙈 pick another" : 'Needs exactly 4 digits';
-            else handleErr(err);
+            if (err.status === 400) {
+              pinErr.textContent = /different/.test(err.data.message)
+                ? (mine ? `That's ${C.HER}'s PIN 🙈 pick another` : "That's your PIN 🙈 pick another")
+                : 'Needs exactly 4 digits';
+            } else handleErr(err);
           }
         };
       }

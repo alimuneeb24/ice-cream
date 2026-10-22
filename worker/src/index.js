@@ -34,17 +34,17 @@ export default {
       const ip = request.headers.get("CF-Connecting-IP") || "local";
       const pin = request.headers.get("X-Pin");
       const now = Date.now();
-      const [attempt, fizaPin] = (
-        await db.batch([
-          db.prepare(`SELECT * FROM pin_attempts WHERE ip = ?`).bind(ip),
-          db.prepare(`SELECT value FROM settings WHERE key = 'pin_fiza'`),
-        ])
-      ).map((r) => r.results[0] ?? null);
+      const [attemptRes, pinRes] = await db.batch([
+        db.prepare(`SELECT * FROM pin_attempts WHERE ip = ?`).bind(ip),
+        db.prepare(`SELECT key, value FROM settings WHERE key IN ('pin_fiza', 'pin_muneeb')`),
+      ]);
+      const attempt = attemptRes.results[0] ?? null;
+      const pinHashes = Object.fromEntries(pinRes.results.map((r) => [r.key, r.value]));
 
       // A locked-out IP is refused even with a correct PIN, so guessing can't continue.
       if (attempt?.locked_until > now) return lockedOut(attempt.locked_until, now, cors);
 
-      const me = await whoIs(pin, env, fizaPin?.value);
+      const me = await whoIs(pin, env, pinHashes);
       if (!me) {
         if (!pin) return json({ error: "bad_pin" }, 401, cors);
         const fails = (attempt && !attempt.locked_until ? attempt.fails : 0) + 1;
@@ -104,7 +104,10 @@ async function route(request, env, me) {
     return openLetter(db, me, milestone(m[1]));
   }
   if (method === "POST" && path === "/pin/fiza") {
-    return resetFizaPin(db, env, me, await readBody(request));
+    return setPin(db, env, me, "fiza", await readBody(request));
+  }
+  if (method === "POST" && path === "/pin/muneeb") {
+    return setPin(db, env, me, "muneeb", await readBody(request));
   }
 
   if (method === "POST" && path === "/hello") return recordOpen(db, me, request, await readBody(request));
@@ -324,15 +327,20 @@ async function openLetter(db, me, at) {
   return ok(await getState(db, me));
 }
 
-// Muneeb sets a new PIN for Fiza. Her old PIN (secret or previous reset) stops working.
-async function resetFizaPin(db, env, me, body) {
+// Muneeb sets a new PIN for Fiza (who = "fiza") or for himself (who = "muneeb").
+// The old one (secret or previous change) stops working right away.
+async function setPin(db, env, me, who, body) {
   if (me !== "Muneeb") throw new HttpError(403, { error: "muneeb_only" });
   const pin = body.pin;
   if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) badRequest("pin must be exactly 4 digits");
-  if (safeEqual(pin, env.PIN_MUNEEB)) badRequest("pin must be different from yours");
+  const hashes = await currentPinHashes(db);
+  const other = who === "fiza"
+    ? await pinMatches(pin, hashes.pin_muneeb, env.PIN_MUNEEB)
+    : await pinMatches(pin, hashes.pin_fiza, env.PIN_FIZA);
+  if (other) badRequest(who === "fiza" ? "pin must be different from yours" : "pin must be different from hers");
   await db
-    .prepare(`INSERT INTO settings (key, value) VALUES ('pin_fiza', ?1) ON CONFLICT (key) DO UPDATE SET value = ?1`)
-    .bind(await hashPin(pin))
+    .prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = ?2`)
+    .bind(who === "fiza" ? "pin_fiza" : "pin_muneeb", await hashPin(pin))
     .run();
   return ok(await getState(db, me));
 }
@@ -502,15 +510,25 @@ function toShop(r) {
 // ---------------------------------------------------------------------------
 // Auth + CORS
 
-// fizaPinHash: set once Muneeb resets her PIN; until then the PIN_FIZA secret applies.
-async function whoIs(pin, env, fizaPinHash) {
+// pinHashes: { pin_fiza?, pin_muneeb? } from settings. A PIN changed on the site is
+// stored there as a hash and replaces the PIN_FIZA / PIN_MUNEEB secret.
+async function whoIs(pin, env, pinHashes) {
   if (!pin) return null;
   // Check both PINs every time (no early exit) so timing doesn't hint at which matched.
-  const isMuneeb = safeEqual(pin, env.PIN_MUNEEB);
-  const isFiza = fizaPinHash ? safeEqual(await hashPin(pin), fizaPinHash) : safeEqual(pin, env.PIN_FIZA);
+  const isMuneeb = await pinMatches(pin, pinHashes.pin_muneeb, env.PIN_MUNEEB);
+  const isFiza = await pinMatches(pin, pinHashes.pin_fiza, env.PIN_FIZA);
   if (isMuneeb) return "Muneeb";
   if (isFiza) return "Fiza";
   return null;
+}
+
+async function pinMatches(pin, hash, secret) {
+  return hash ? safeEqual(await hashPin(pin), hash) : safeEqual(pin, secret);
+}
+
+async function currentPinHashes(db) {
+  const rows = await db.prepare(`SELECT key, value FROM settings WHERE key IN ('pin_fiza', 'pin_muneeb')`).all();
+  return Object.fromEntries(rows.results.map((r) => [r.key, r.value]));
 }
 
 async function hashPin(pin) {
