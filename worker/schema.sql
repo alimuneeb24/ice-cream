@@ -95,3 +95,22 @@ CREATE TABLE IF NOT EXISTS posts (
   width         INTEGER,
   height        INTEGER
 );
+
+-- Reactions on polaroids: one per person per post.
+CREATE TABLE IF NOT EXISTS post_reactions (
+  post_id    INTEGER NOT NULL,
+  who        TEXT    NOT NULL,
+  emoji      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, who)
+);
+
+-- Comments on polaroids (a little two-person thread per photo).
+CREATE TABLE IF NOT EXISTS post_comments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id    INTEGER NOT NULL,
+  by         TEXT    NOT NULL,
+  text       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_post_comments_post ON post_comments (post_id, created_at);

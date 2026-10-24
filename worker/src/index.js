@@ -20,6 +20,7 @@ const COOLDOWN_RESET_SQL = `COALESCE((SELECT CAST(value AS INTEGER) FROM setting
 const OPENS_KEEP_MS = 90 * 24 * 60 * 60 * 1000; // Fiza's visit log is kept for 90 days
 const OPEN_GAP_MS = 2 * 60 * 1000; // away longer than this = a new visit
 const OPEN_NOTIFY_GAP_MS = 10 * 60 * 1000; // at most one "Fiza walked in" ping per 10 minutes
+const MAX_COMMENT = 500;
 const MAX_PHOTO_BYTES = 95 * 1024 * 1024; // originals are kept untouched; just under the 100 MB request cap
 const MAX_PIN_TRIES = 10; // wrong PINs from one IP before it gets locked out
 const LOCKOUT_MS = 15 * 60 * 1000;
@@ -146,6 +147,19 @@ async function route(request, env, me, ctx) {
     return getPhoto(db, env, Number(m[1]), new URL(request.url).searchParams.get("size"));
   }
   if (method === "DELETE" && (m = path.match(/^\/posts\/(\d+)$/))) return deletePost(db, env, me, Number(m[1]));
+  if (method === "PUT" && (m = path.match(/^\/posts\/(\d+)\/reaction$/))) {
+    const res = await reactToPost(db, me, Number(m[1]), await readBody(request));
+    if (res.notify) tell(ctx, env, me, res.notify);
+    return res.result;
+  }
+  if (method === "POST" && (m = path.match(/^\/posts\/(\d+)\/comments$/))) {
+    const res = await commentOnPost(db, me, Number(m[1]), await readBody(request));
+    tell(ctx, env, me, res.notify);
+    return res.result;
+  }
+  if (method === "DELETE" && (m = path.match(/^\/posts\/(\d+)\/comments\/(\d+)$/))) {
+    return deleteComment(db, me, Number(m[1]), Number(m[2]));
+  }
   if (method === "PATCH" && (m = path.match(/^\/milestones\/(\d+)$/))) {
     return writeLetter(db, me, milestone(m[1]), await readBody(request));
   }
@@ -334,9 +348,71 @@ async function deletePost(db, env, me, id) {
   if (!row) throw new HttpError(404, { error: "not_found" });
   if (row.by !== me && me !== "Muneeb") throw new HttpError(403, { error: "not_yours" });
   await env.PHOTOS.delete([photoKey(id, "full"), photoKey(id, "thumb")]);
-  const steps = [db.prepare(`DELETE FROM posts WHERE id = ?`).bind(id)];
+  const steps = [
+    db.prepare(`DELETE FROM posts WHERE id = ?`).bind(id),
+    db.prepare(`DELETE FROM post_reactions WHERE post_id = ?`).bind(id),
+    db.prepare(`DELETE FROM post_comments WHERE post_id = ?`).bind(id),
+  ];
   if (row.paid_event_id) steps.push(db.prepare(`DELETE FROM events WHERE id = ?`).bind(row.paid_event_id));
   await db.batch(steps);
+  return ok(await getState(db, me));
+}
+
+// ---- Reactions + comments on polaroids ----
+
+const REACTIONS = ["🍦", "🍨", "🍧", "😋", "😂", "🔥", "👀", "😭", "🫡", "❤️", "🩷", "💛"];
+
+async function postOrThrow(db, id) {
+  const post = await db.prepare(`SELECT id, by, note FROM posts WHERE id = ?`).bind(id).first();
+  if (!post) throw new HttpError(404, { error: "not_found" });
+  return post;
+}
+// "your polaroid" when the person being notified posted it.
+const whosePolaroid = (post, me) => (post.by === me ? "their own polaroid" : "your polaroid");
+
+// { emoji } sets my reaction; { emoji: null } removes it.
+async function reactToPost(db, me, id, body) {
+  const post = await postOrThrow(db, id);
+  const emoji = body.emoji ?? null;
+  if (emoji !== null && !REACTIONS.includes(emoji)) badRequest(`emoji must be one of ${REACTIONS.join(" ")}`);
+  let changed = false;
+  if (emoji === null) {
+    await db.prepare(`DELETE FROM post_reactions WHERE post_id = ? AND who = ?`).bind(id, me).run();
+  } else {
+    const res = await db
+      .prepare(
+        `INSERT INTO post_reactions (post_id, who, emoji, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (post_id, who) DO UPDATE SET emoji = ?3, created_at = ?4 WHERE emoji != ?3`
+      )
+      .bind(id, me, emoji, Date.now())
+      .run();
+    changed = res.meta.changes > 0;
+  }
+  return {
+    result: ok(await getState(db, me)),
+    notify: changed ? { title: `${emoji} ${me} reacted`, body: `to ${whosePolaroid(post, me)}${post.note ? ` · “${clip(post.note, 60)}”` : ""}`, tag: `post-${id}`, url: `./#post-${id}` } : null,
+  };
+}
+
+async function commentOnPost(db, me, id, body) {
+  const post = await postOrThrow(db, id);
+  const text = reqText(body, "text", MAX_COMMENT);
+  await db
+    .prepare(`INSERT INTO post_comments (post_id, by, text, created_at) VALUES (?, ?, ?, ?)`)
+    .bind(id, me, text, Date.now())
+    .run();
+  return {
+    result: ok(await getState(db, me)),
+    notify: { title: `💬 ${me} on ${whosePolaroid(post, me)}`, body: `“${clip(text, 140)}”`, tag: `post-${id}`, url: `./#post-${id}` },
+  };
+}
+
+// Your own comments; Muneeb can delete any.
+async function deleteComment(db, me, postId, id) {
+  const row = await db.prepare(`SELECT by FROM post_comments WHERE id = ? AND post_id = ?`).bind(id, postId).first();
+  if (!row) throw new HttpError(404, { error: "not_found" });
+  if (row.by !== me && me !== "Muneeb") throw new HttpError(403, { error: "not_yours" });
+  await db.prepare(`DELETE FROM post_comments WHERE id = ?`).bind(id).run();
   return ok(await getState(db, me));
 }
 
@@ -633,7 +709,7 @@ function milestone(raw) {
 // State
 
 async function getState(db, me) {
-  const [events, shops, letters, reset, opens, posts] = await db.batch([
+  const [events, shops, letters, reset, opens, posts, reactions, comments] = await db.batch([
     db.prepare(`SELECT * FROM events ORDER BY created_at DESC, id DESC`),
     db.prepare(`SELECT * FROM shops ORDER BY created_at ASC, id ASC`),
     db.prepare(`SELECT * FROM milestones ORDER BY at ASC`),
@@ -645,6 +721,8 @@ async function getState(db, me) {
       `SELECT p.*, e.qty AS paid_qty FROM posts p LEFT JOIN events e ON e.id = p.paid_event_id
        ORDER BY p.created_at DESC, p.id DESC`
     ),
+    db.prepare(`SELECT post_id, who, emoji FROM post_reactions ORDER BY created_at`),
+    db.prepare(`SELECT id, post_id, by, text, created_at FROM post_comments ORDER BY created_at, id`),
   ]);
   const cooldownResetAt = reset.results[0]?.t ?? 0;
 
@@ -673,7 +751,13 @@ async function getState(db, me) {
     milestones: letters.results
       .filter((r) => me === "Muneeb" || r.at <= owed)
       .map((r) => ({ at: r.at, note: r.note, openedAt: r.opened_at })),
-    posts: posts.results.map(toPost),
+    posts: posts.results.map((r) => ({
+      ...toPost(r),
+      reactions: reactions.results.filter((x) => x.post_id === r.id).map((x) => ({ who: x.who, emoji: x.emoji })),
+      comments: comments.results
+        .filter((c) => c.post_id === r.id)
+        .map((c) => ({ id: c.id, by: c.by, text: c.text, createdAt: c.created_at })),
+    })),
     ...(me === "Muneeb" ? { opens: opens.results } : {}),
   };
 }
@@ -753,7 +837,7 @@ function safeEqual(a, b) {
 
 function corsHeaders(request, env) {
   const headers = {
-    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "X-Pin, Content-Type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",

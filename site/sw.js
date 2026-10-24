@@ -57,7 +57,11 @@ self.addEventListener('notificationclick', (e) => {
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
       const win = wins.find((w) => w.url.startsWith(self.registration.scope)) || wins[0];
-      if (win && 'focus' in win) return win.focus();
+      if (win && 'focus' in win) {
+        // Already open: tell the page where to go (e.g. #post-5), then bring it forward.
+        win.postMessage({ type: 'open', url });
+        return win.focus();
+      }
       return self.clients.openWindow(url);
     })
   );

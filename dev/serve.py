@@ -66,6 +66,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_PATCH(self):
         self.route(None)
 
+    def do_PUT(self):
+        self.route(None)
+
     def do_DELETE(self):
         self.route(None)
 

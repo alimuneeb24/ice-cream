@@ -317,6 +317,8 @@
     setTimeout(maybeLetters, 1700);
     $('adminBtn').hidden = !isHim();
     showView(viewFromHash(), false);
+    if (/#post-\d+/.test(location.hash)) openDeepLink(location.hash);
+    if (pendingPost) { const id = pendingPost; pendingPost = null; setTimeout(() => openPhoto(id), 300); }
     clearInterval(pollTimer);
     pollTimer = setInterval(() => { if (document.visibilityState === 'visible') { refresh(); pingOpen(); } }, C.POLL_MS);
   }
@@ -366,6 +368,7 @@
     if (!$('viewCases').hidden) renderCases();
     renderAdmin();
     renderScrapbook();
+    renderPhotoSocial();
     const mode = opts.intro ? 'intro' : opts.animate ? 'animate' : 'instant';
     standQueue = standQueue.then(() => drawStand(p, mode)).then(() => setTally(state.totals.pending));
     return standQueue;
@@ -1443,6 +1446,7 @@
         ${p.rating ? `<span class="pol-rating">${cones(p.rating)}</span>` : ''}
         ${p.note ? `<span class="pol-note">“${esc(p.note)}”</span>` : ''}
         <span class="pol-meta">${esc(p.by)} · ${d}${p.country ? ' · ' + flagOf(p.country) : ''}</span>
+        ${(p.reactions || []).length || (p.comments || []).length ? `<span class="pol-social">${(p.reactions || []).map((r) => r.emoji).join('')}${(p.comments || []).length ? ` 💬 ${p.comments.length}` : ''}</span>` : ''}
       </span>
     </button>`;
   }
@@ -1493,11 +1497,38 @@
           ${shop ? ` · 📍 ${esc(shop)}` : ''}${f && f.key === p.flavour ? ` · ${f.emoji} ${esc(f.name)}` : ''}
           ${p.paidQty ? `<br>🍦 ${plural(p.paidQty, 'ice cream')} off the debt` : ''}
         </div>
+        <div id="pvSocial"></div>
+        <form class="pv-comment" id="pvCommentForm">
+          <textarea id="pvCommentIn" rows="1" maxlength="500" placeholder="Say something…"></textarea>
+          <button class="btn btn-small" type="submit">Send</button>
+        </form>
         <div class="pv-actions">
           <button class="btn btn-small" data-pv="save">Save photo</button>
           ${canDelete ? '<button class="link-btn danger" data-pv="delete">Delete</button>' : ''}
         </div>
       </div>`;
+    openPhotoId = id;
+    renderPhotoSocial();
+    const commentIn = $('pvCommentIn');
+    commentIn.addEventListener('input', () => { commentIn.style.height = 'auto'; commentIn.style.height = Math.min(commentIn.scrollHeight, 120) + 'px'; });
+    $('pvCommentForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = commentIn.value.trim();
+      if (!text) return;
+      const btn = e.target.querySelector('button');
+      btn.disabled = true;
+      try {
+        const res = await api(`/posts/${id}/comments`, 'POST', { text });
+        setState(res.state);
+        commentIn.value = '';
+        commentIn.style.height = '';
+        renderAll();
+        sfx.tap();
+        const list = $('pvSocial').querySelector('.pv-thread');
+        if (list) list.scrollTop = list.scrollHeight;
+      } catch (err) { handleErr(err); }
+      btn.disabled = false;
+    });
     const img = $('pvImg');
     photoUrl(id, 'thumb').then((u) => { if (!img.src) img.src = u; }).catch(() => {});
     photoUrl(id, 'full')
@@ -1505,6 +1536,18 @@
       .catch(() => { $('pvLoading').textContent = "Couldn't load the full photo"; });
 
     $('photoView').onclick = async (e) => {
+      const react = e.target.closest('[data-react]');
+      if (react) return setReaction(id, react.dataset.react);
+      const delC = e.target.closest('[data-del-comment]');
+      if (delC) {
+        if (delC.dataset.sure !== '1') { delC.dataset.sure = '1'; delC.textContent = 'delete?'; return; }
+        try {
+          const res = await api(`/posts/${id}/comments/${delC.dataset.delComment}`, 'DELETE');
+          setState(res.state);
+          renderAll();
+        } catch (err) { handleErr(err); }
+        return;
+      }
       const act = e.target.closest('[data-pv]')?.dataset.pv;
       if (act === 'close' || e.target === $('photoView')) return closePhoto();
       if (act === 'save') return savePhoto(id);
@@ -1526,8 +1569,75 @@
     };
   }
   function closePhoto() {
+    openPhotoId = null;
     $('photoView').hidden = true;
     $('photoView').innerHTML = '';
+  }
+
+  // Reactions + comments under the open photo (re-rendered when state refreshes;
+  // the comment box itself is left alone so a half-typed message survives).
+  const REACTIONS = ['🍦', '🍨', '🍧', '😋', '😂', '🔥', '👀', '😭', '🫡', '❤️', '🩷', '💛'];
+  let openPhotoId = null;
+
+  function renderPhotoSocial() {
+    const box = $('pvSocial');
+    const p = openPhotoId && (state.posts || []).find((x) => x.id === openPhotoId);
+    if (!box || !p) return;
+    const mine = (p.reactions || []).find((r) => r.who === state.me);
+    const theirs = (p.reactions || []).filter((r) => r.who !== state.me);
+    const time = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+    const day = (ms) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    box.innerHTML = `
+      <div class="pv-reacts">
+        ${REACTIONS.map((e) => `<button class="react${mine && mine.emoji === e ? ' on' : ''}" data-react="${e}" aria-pressed="${!!(mine && mine.emoji === e)}">${e}</button>`).join('')}
+      </div>
+      ${theirs.length ? `<div class="pv-reacted">${theirs.map((r) => `${esc(r.who)} reacted ${r.emoji}`).join(' · ')}</div>` : ''}
+      ${(p.comments || []).length ? `<ul class="pv-thread">
+        ${p.comments.map((c) => `<li class="cm${c.by === state.me ? ' mine' : ''}">
+          <span class="cm-text">${esc(c.text)}</span>
+          <span class="cm-meta">${c.by === state.me ? '' : esc(c.by) + ' · '}${day(c.createdAt)} ${time(c.createdAt)}
+            ${c.by === state.me || isHim() ? `<button class="cm-del" data-del-comment="${c.id}" aria-label="Delete comment">×</button>` : ''}</span>
+        </li>`).join('')}
+      </ul>` : ''}`;
+    const list = box.querySelector('.pv-thread');
+    if (list) list.scrollTop = list.scrollHeight;
+  }
+
+  async function setReaction(id, emoji) {
+    const p = (state.posts || []).find((x) => x.id === id);
+    const mine = p && (p.reactions || []).find((r) => r.who === state.me);
+    const next = mine && mine.emoji === emoji ? null : emoji; // tap your own reaction again to remove it
+    sfx.tap();
+    buzz(10);
+    try {
+      const res = await api(`/posts/${id}/reaction`, 'PUT', { emoji: next });
+      setState(res.state);
+      renderAll();
+      if (next) {
+        const b = $('pvSocial').querySelector(`[data-react="${next}"]`);
+        if (b) burst(b, { particleCount: 18, spread: 50, startVelocity: 18, scalar: 0.7 });
+      }
+    } catch (err) { handleErr(err); }
+  }
+
+  // Deep links from notifications: #post-<id> opens that photo once logged in.
+  let pendingPost = null;
+  function openDeepLink(url) {
+    const m = /#post-(\d+)/.exec(url || '');
+    if (!m) return false;
+    pendingPost = +m[1];
+    history.replaceState(null, '', location.pathname);
+    if (state && !$('app').hidden) {
+      showView('main', false);
+      openPhoto(pendingPost);
+      pendingPost = null;
+    }
+    return true;
+  }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'open') openDeepLink(e.data.url);
+    });
   }
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('photoView').hidden) closePhoto(); });
 

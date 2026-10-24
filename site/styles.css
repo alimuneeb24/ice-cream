@@ -814,3 +814,28 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
   font-weight: 600; font-size: 15px;
 }
 .notif-banner span { flex: 1 1 200px; }
+
+/* ---------- reactions + comments ---------- */
+.pol-social { font-size: 13px; color: var(--ink-soft); }
+.pv-info { max-height: 55dvh; }
+.pv-reacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.react {
+  width: 40px; height: 40px; padding: 0; font-size: 20px; border-radius: 50%;
+  border: 2.5px solid var(--ink); background: #fff; box-shadow: 0 3px 0 var(--ink);
+  transition: transform 0.15s cubic-bezier(.3, 1.8, .5, 1);
+}
+.react.on { background: var(--mango); transform: scale(1.12); }
+.react:active { transform: translateY(2px) scale(0.95); box-shadow: 0 1px 0 var(--ink); }
+.pv-reacted { margin-top: 6px; font-size: 14px; color: var(--ink-soft); }
+.pv-thread { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; }
+.cm { align-self: flex-start; max-width: 85%; padding: 8px 12px; border: 2px solid var(--ink); border-radius: 16px 16px 16px 4px; background: #fff; }
+.cm.mine { align-self: flex-end; background: var(--mint); border-radius: 16px 16px 4px 16px; }
+.cm-text { display: block; overflow-wrap: anywhere; white-space: pre-wrap; }
+.cm-meta { display: block; margin-top: 2px; font-size: 11px; color: var(--ink-soft); }
+.cm-del { border: 0; background: none; padding: 0 2px; color: #D9577B; font-weight: 700; font-size: 12px; }
+.pv-comment { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
+.pv-comment textarea {
+  flex: 1; min-height: 40px; padding: 9px 12px; font: inherit; font-size: 16px; color: var(--ink); resize: none;
+  background: #fff; border: 2.5px solid var(--ink); border-radius: 16px;
+}
+.pv-comment textarea:focus { outline: none; border-color: var(--strawberry-deep); }
