@@ -1484,29 +1484,39 @@
     const f = p.flavour ? Art.flavour(p.flavour) : null;
     const when = new Date(p.createdAt);
     const canDelete = p.by === state.me || isHim();
+    const tag = (t) => `<span class="pv-tag">${t}</span>`;
+    const tags = [
+      tag(`🕐 ${when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase()}`),
+      p.country ? tag(`${flagOf(p.country)} ${esc(countryName(p.country))}`) : '',
+      shop ? tag(`📍 ${esc(shop)}`) : '',
+      f && f.key === p.flavour ? tag(`${f.emoji} ${esc(f.name)}`) : '',
+      p.paidQty ? tag(`🍦 −${p.paidQty} off the debt`) : '',
+    ].join('');
     $('photoView').hidden = false;
+    document.documentElement.style.overflow = 'hidden'; // the page behind shouldn't scroll
+    $('photoView').scrollTop = 0;
     $('photoView').innerHTML = `
       <button class="pv-close" data-pv="close" aria-label="Close">✕</button>
-      <div class="pv-img"><img id="pvImg" alt=""><span class="pv-loading" id="pvLoading">Loading full size…</span></div>
-      <div class="pv-info">
-        ${p.rating ? `<div class="pol-rating">${cones(p.rating)}</div>` : ''}
-        ${p.note ? `<div class="pv-note">“${esc(p.note)}”</div>` : ''}
-        <div class="pv-meta">
-          <b>${esc(p.by)}</b> · ${when.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} · ${when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase()}
-          ${p.country ? `<br>${flagOf(p.country)} ${esc(countryName(p.country))}` : ''}
-          ${shop ? ` · 📍 ${esc(shop)}` : ''}${f && f.key === p.flavour ? ` · ${f.emoji} ${esc(f.name)}` : ''}
-          ${p.paidQty ? `<br>🍦 ${plural(p.paidQty, 'ice cream')} off the debt` : ''}
-        </div>
+      <article class="pv-card">
+        <figure class="pv-polaroid" style="--tilt:${tiltOf(id) / 2}deg">
+          <div class="pv-photo"><img id="pvImg" alt="Ice cream photo by ${esc(p.by)}"><span class="pv-loading" id="pvLoading">loading full size…</span></div>
+          <figcaption>
+            ${p.rating ? `<span class="pol-rating pv-rating">${cones(p.rating)}</span>` : ''}
+            ${p.note ? `<span class="pv-note">“${esc(p.note)}”</span>` : ''}
+            <span class="pv-by">${esc(p.by)} · ${when.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+          </figcaption>
+        </figure>
+        <div class="pv-tags">${tags}</div>
         <div id="pvSocial"></div>
         <form class="pv-comment" id="pvCommentForm">
           <textarea id="pvCommentIn" rows="1" maxlength="500" placeholder="Say something…"></textarea>
           <button class="btn btn-small" type="submit">Send</button>
         </form>
         <div class="pv-actions">
-          <button class="btn btn-small" data-pv="save">Save photo</button>
+          <button class="btn btn-small btn-plain" data-pv="save">💾 Save photo</button>
           ${canDelete ? '<button class="link-btn danger" data-pv="delete">Delete</button>' : ''}
         </div>
-      </div>`;
+      </article>`;
     openPhotoId = id;
     renderPhotoSocial();
     const commentIn = $('pvCommentIn');
@@ -1570,6 +1580,7 @@
   }
   function closePhoto() {
     openPhotoId = null;
+    document.documentElement.style.overflow = '';
     $('photoView').hidden = true;
     $('photoView').innerHTML = '';
   }
@@ -1588,17 +1599,19 @@
     const time = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase();
     const day = (ms) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
     box.innerHTML = `
+      <h4 class="pv-h">React</h4>
       <div class="pv-reacts">
         ${REACTIONS.map((e) => `<button class="react${mine && mine.emoji === e ? ' on' : ''}" data-react="${e}" aria-pressed="${!!(mine && mine.emoji === e)}">${e}</button>`).join('')}
       </div>
       ${theirs.length ? `<div class="pv-reacted">${theirs.map((r) => `${esc(r.who)} reacted ${r.emoji}`).join(' · ')}</div>` : ''}
+      <h4 class="pv-h">💬 Chat</h4>
       ${(p.comments || []).length ? `<ul class="pv-thread">
         ${p.comments.map((c) => `<li class="cm${c.by === state.me ? ' mine' : ''}">
           <span class="cm-text">${esc(c.text)}</span>
           <span class="cm-meta">${c.by === state.me ? '' : esc(c.by) + ' · '}${day(c.createdAt)} ${time(c.createdAt)}
             ${c.by === state.me || isHim() ? `<button class="cm-del" data-del-comment="${c.id}" aria-label="Delete comment">×</button>` : ''}</span>
         </li>`).join('')}
-      </ul>` : ''}`;
+      </ul>` : '<p class="pv-empty">No messages yet. Say something about it 👇</p>'}`;
     const list = box.querySelector('.pv-thread');
     if (list) list.scrollTop = list.scrollHeight;
   }
