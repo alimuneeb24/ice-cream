@@ -7,6 +7,11 @@ binding = "DB"
 database_name = "icecream"
 database_id = "b81879e6-bf63-4e81-a07e-f84db0639962"
 
+# Full-size scrapbook photos (originals + small previews). Private: served only via the Worker.
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "icecream-photos"
+
 [vars]
 # Only the live page may call the API from a browser. (The local demo goes through
 # dev/serve.py, which calls the Worker server-side, so it needs no entry here.)

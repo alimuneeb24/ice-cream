@@ -265,6 +265,7 @@
     if (s.me === C.HIM) store.set('mine', '1');
     openId = null;
     api('/hello', 'POST', { mine: isMyDevice() }).then((r) => { openId = r.openId || null; }).catch(() => {});
+    syncPush().catch(() => {});
     wrongCount = 0;
     sfx.yay();
     clearTimeout(alooTimer);
@@ -364,6 +365,7 @@
     updateBell();
     if (!$('viewCases').hidden) renderCases();
     renderAdmin();
+    renderScrapbook();
     const mode = opts.intro ? 'intro' : opts.animate ? 'animate' : 'instant';
     standQueue = standQueue.then(() => drawStand(p, mode)).then(() => setTally(state.totals.pending));
     return standQueue;
@@ -1223,40 +1225,115 @@
     );
   }
 
-  // ---------- "we had ice cream" sheet ----------
+  // ---------- 📸 scrapbook: post an ice cream ----------
+  // The original photo is uploaded untouched (full resolution); the phone also makes
+  // a small preview for the polaroid wall. Photo required; everything else optional.
+  const THUMB_MAX = 720;
+
+  async function makeThumb(file) {
+    let img;
+    try {
+      img = await createImageBitmap(file);
+    } catch {
+      img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = URL.createObjectURL(file);
+      });
+    }
+    const w = img.width;
+    const h = img.height;
+    const k = Math.min(1, THUMB_MAX / Math.max(w, h));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(w * k);
+    canvas.height = Math.round(h * k);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.85));
+    return { blob, width: w, height: h };
+  }
+
+  // XHR (not fetch) so we can show upload progress for big originals.
+  function uploadPost(form, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', C.API_URL + '/posts');
+      xhr.setRequestHeader('X-Pin', pin || '');
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+        const err = new Error(data.error || 'http_' + xhr.status);
+        err.status = xhr.status;
+        err.data = data;
+        reject(err);
+      };
+      xhr.onerror = () => reject(new Error('network'));
+      xhr.send(form);
+    });
+  }
+
+  const photoInput = document.createElement('input');
+  photoInput.type = 'file';
+  photoInput.accept = 'image/*';
+  photoInput.hidden = true;
+  document.body.appendChild(photoInput);
   $('openEat').addEventListener('click', () => {
     if (!state) return;
+    photoInput.value = '';
+    photoInput.click();
+  });
+  photoInput.addEventListener('change', () => {
+    const file = photoInput.files && photoInput.files[0];
+    if (file) openPostSheet(file);
+  });
+
+  const cones = (n, max = 5) =>
+    Array.from({ length: max }, (_, i) => `<span class="${i < n ? 'on' : ''}">🍦</span>`).join('');
+
+  function openPostSheet(file) {
     const pending = state.totals.pending;
-    if (pending === 0) return toast('Nothing owed right now 🎉', { sub: 'All clear… for now 👀' });
-    let qty = Math.min(2, pending);
+    const preview = URL.createObjectURL(file);
+    let rating = null;
     let flavour = null;
-    let shopId = null;
-    const chips = (items, attr) =>
-      items.map((it) => `<button class="chip" data-${attr}="${esc(it.id)}" aria-pressed="false">${esc(it.label)}</button>`).join('');
+    let shopId = (state.shops.find((s) => s.isNext) || {}).id || null;
+    let paid = false;
+    let qty = Math.min(2, pending);
+    const chips = (items, attr, selected) =>
+      items.map((it) => `<button class="chip" data-${attr}="${esc(it.id)}" aria-pressed="${it.id === selected}">${esc(it.label)}</button>`).join('');
 
     openSheet(
-      `<h3>Ice cream time! 😋</h3>
-       <p>How many did you have?</p>
-       <div class="stepper">
-         <button class="btn" data-step="-1" aria-label="One less">−</button>
-         <output id="qtyOut">${qty}</output>
-         <button class="btn" data-step="1" aria-label="One more">+</button>
-       </div>
+      `<h3>Ice cream! 📸</h3>
+       <div class="post-preview"><img src="${preview}" alt="Your photo"></div>
+       <label>Rate it (optional)</label>
+       <div class="rate" id="rate">${Array.from({ length: 5 }, (_, i) => `<button class="rate-cone" data-rate="${i + 1}" aria-label="${i + 1} out of 5">🍦</button>`).join('')}</div>
+       <label for="postNote">Note (optional)</label>
+       <textarea id="postNote" rows="2" maxlength="280" placeholder="e.g. best one yet"></textarea>
+       ${state.shops.length ? `<label>Where? (optional)</label><div class="chips" id="shopChips">${chips(state.shops.map((s) => ({ id: s.id, label: s.name })), 'shop', shopId)}</div>` : ''}
        <label>Flavour (optional)</label>
        <div class="chips" id="flavChips">${chips(C.FLAVOURS.map((f) => ({ id: f.key, label: `${f.emoji} ${f.name}` })), 'flav')}</div>
-       ${state.shops.length ? `<label>Where? (optional)</label><div class="chips" id="shopChips">${chips(state.shops.map((s) => ({ id: s.id, label: s.name })), 'shop')}</div>` : ''}
+       ${pending > 0 ? `
+       <div class="paid-toggle">
+         <button class="chip" id="paidChip" aria-pressed="false">🍦 Counts toward the debt</button>
+         <div class="stepper" id="paidStepper" hidden>
+           <button class="btn" data-step="-1" aria-label="One less">−</button>
+           <output id="qtyOut">${qty}</output>
+           <button class="btn" data-step="1" aria-label="One more">+</button>
+         </div>
+       </div>` : ''}
+       <div class="upload-bar" id="uploadBar" hidden><i></i><span>Uploading…</span></div>
        <div class="sheet-actions">
          <button class="btn btn-plain" data-act="cancel">Cancel</button>
-         <button class="btn btn-mint" data-act="save">Nom nom, log it 🍦</button>
+         <button class="btn btn-mint" data-act="save">Post it 📸</button>
        </div>`,
       (root) => {
-        const out = root.querySelector('#qtyOut');
-        root.querySelectorAll('[data-step]').forEach((b) => {
-          b.onclick = () => {
-            qty = Math.max(1, Math.min(pending, qty + +b.dataset.step));
-            out.textContent = qty;
-            sfx.tap();
-          };
+        root.querySelector('#rate').addEventListener('click', (e) => {
+          const b = e.target.closest('[data-rate]');
+          if (!b) return;
+          rating = rating === +b.dataset.rate ? null : +b.dataset.rate;
+          root.querySelectorAll('.rate-cone').forEach((c) => c.classList.toggle('on', rating !== null && +c.dataset.rate <= rating));
+          sfx.tap();
         });
         const single = (box, set) => box && box.addEventListener('click', (e) => {
           const c = e.target.closest('.chip');
@@ -1268,31 +1345,211 @@
         });
         single(root.querySelector('#flavChips'), (c) => { flavour = c ? c.dataset.flav : null; });
         single(root.querySelector('#shopChips'), (c) => { shopId = c ? +c.dataset.shop : null; });
+        const paidChip = root.querySelector('#paidChip');
+        if (paidChip) {
+          paidChip.onclick = () => {
+            paid = !paid;
+            paidChip.setAttribute('aria-pressed', String(paid));
+            root.querySelector('#paidStepper').hidden = !paid;
+          };
+          root.querySelectorAll('[data-step]').forEach((b) => {
+            b.onclick = () => {
+              qty = Math.max(1, Math.min(pending, qty + +b.dataset.step));
+              root.querySelector('#qtyOut').textContent = qty;
+              sfx.tap();
+            };
+          });
+        }
         root.querySelector('[data-act="cancel"]').onclick = () => closeSheet();
         root.querySelector('[data-act="save"]').onclick = async (e) => {
-          e.target.disabled = true;
+          const btn = e.target;
+          btn.disabled = true;
+          const bar = root.querySelector('#uploadBar');
+          bar.hidden = false;
+          const setBar = (f) => {
+            bar.querySelector('i').style.width = Math.round(f * 100) + '%';
+            bar.querySelector('span').textContent = f < 1 ? `Uploading… ${Math.round(f * 100)}%` : 'Almost there…';
+          };
+          setBar(0);
           try {
-            const body = { qty };
-            if (flavour) body.flavour = flavour;
-            if (shopId) body.shopId = shopId;
-            const res = await api('/paid', 'POST', body);
-            lastMine = { at: Date.now() };
+            const thumb = await makeThumb(file);
+            const form = new FormData();
+            form.append('photo', file, file.name || 'photo.jpg');
+            form.append('thumb', thumb.blob, 'thumb.jpg');
+            form.append('width', thumb.width);
+            form.append('height', thumb.height);
+            if (rating) form.append('rating', rating);
+            const note = root.querySelector('#postNote').value.trim();
+            if (note) form.append('note', note);
+            if (shopId) form.append('shopId', shopId);
+            if (flavour) form.append('flavour', flavour);
+            if (paid) form.append('paidQty', qty);
+            const res = await uploadPost(form, setBar);
             setState(res.state);
             closeSheet(true);
-            $('parlour').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
-            await renderAll({ animate: true });
+            URL.revokeObjectURL(preview);
+            freshPostId = res.post.id;
+            if (paid && res.post.paidQty) {
+              lastMine = { at: Date.now() };
+              $('parlour').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+              await renderAll({ animate: true });
+              undoToast(`Posted 📸 · ${plural(res.post.paidQty, 'ice cream')} paid off`);
+            } else {
+              renderAll();
+              toast('Posted 📸', { sub: 'Added to the scrapbook' });
+            }
             sfx.yay();
-            burst($('tallyNum'), { colors: ['#B8F2E6', '#7FD9C4', '#FFB5C8', '#ffffff'] });
-            undoToast(`Chalo, ${plural(res.event.qty, 'ice cream')} paid off 🍦`);
+            $('scrapbook').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
           } catch (err) {
-            e.target.disabled = false;
-            if (err.status === 409) { closeSheet(true); toast('Nothing owed right now 🎉'); refresh(); }
-            else handleErr(err);
+            btn.disabled = false;
+            bar.hidden = true;
+            if (err.status === 400) toast("Couldn't post that 🥲", { sub: err.data.message });
+            else if (err.message === 'network') toast('Upload failed 🥲', { sub: 'Check your connection and try again' });
+            else if (err.status === 401) handleErr(err);
+            else toast("Couldn't read that photo 🥲", { sub: 'Try another one' });
           }
         };
-      }
+      },
+      () => URL.revokeObjectURL(preview)
     );
+  }
+
+  // ---------- 📸 scrapbook: polaroid wall + full-size viewer ----------
+  const photoUrls = new Map(); // `${id}:${size}` → object URL (photos never change)
+  let freshPostId = null;
+  let scrapShown = 6;
+
+  async function photoUrl(id, size) {
+    const key = `${id}:${size}`;
+    if (photoUrls.has(key)) return photoUrls.get(key);
+    const res = await fetch(`${C.API_URL}/posts/${id}/photo?size=${size}`, { headers: { 'X-Pin': pin || '' } });
+    if (!res.ok) throw new Error('photo_' + res.status);
+    const url = URL.createObjectURL(await res.blob());
+    photoUrls.set(key, url);
+    return url;
+  }
+
+  const flagOf = (cc) => (cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 127397 + c.charCodeAt(0))) : '');
+  const countryName = (cc) => {
+    try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(cc); } catch { return cc; }
+  };
+  const tiltOf = (id) => ((id * 37) % 7) - 3; // stable little tilt per polaroid
+
+  function polaroidHTML(p) {
+    const d = new Date(p.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return `<button class="polaroid${p.id === freshPostId ? ' fresh' : ''}" data-post="${p.id}" style="--tilt:${tiltOf(p.id)}deg" aria-label="Photo by ${esc(p.by)}">
+      <span class="pol-photo"><img alt="" data-thumb="${p.id}"></span>
+      <span class="pol-caption">
+        ${p.rating ? `<span class="pol-rating">${cones(p.rating)}</span>` : ''}
+        ${p.note ? `<span class="pol-note">“${esc(p.note)}”</span>` : ''}
+        <span class="pol-meta">${esc(p.by)} · ${d}${p.country ? ' · ' + flagOf(p.country) : ''}</span>
+      </span>
+    </button>`;
+  }
+
+  const thumbObserver = new IntersectionObserver((entries) => {
+    entries.forEach((en) => {
+      if (!en.isIntersecting) return;
+      const img = en.target;
+      thumbObserver.unobserve(img);
+      photoUrl(+img.dataset.thumb, 'thumb').then((u) => { img.src = u; }).catch(() => img.classList.add('broken'));
+    });
+  }, { rootMargin: '300px' });
+
+  function renderScrapbook() {
+    const posts = state.posts || [];
+    const list = posts.slice(0, scrapShown);
+    $('scrapCount').textContent = posts.length ? `${posts.length}` : '';
+    $('scrapWall').innerHTML = list.length
+      ? list.map(polaroidHTML).join('')
+      : `<p class="scrap-empty">No polaroids yet. Next ice cream, tap <b>📸 Ice cream!</b></p>`;
+    $('scrapMore').hidden = posts.length <= scrapShown;
+    $('scrapWall').querySelectorAll('img[data-thumb]').forEach((img) => thumbObserver.observe(img));
+    freshPostId = null;
+  }
+  $('scrapMore').addEventListener('click', () => { scrapShown += 12; renderScrapbook(); });
+  $('scrapWall').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-post]');
+    if (b) openPhoto(+b.dataset.post);
   });
+
+  function openPhoto(id) {
+    const p = (state.posts || []).find((x) => x.id === id);
+    if (!p) return;
+    const shop = (state.shops.find((s) => s.id === p.shopId) || {}).name;
+    const f = p.flavour ? Art.flavour(p.flavour) : null;
+    const when = new Date(p.createdAt);
+    const canDelete = p.by === state.me || isHim();
+    $('photoView').hidden = false;
+    $('photoView').innerHTML = `
+      <button class="pv-close" data-pv="close" aria-label="Close">✕</button>
+      <div class="pv-img"><img id="pvImg" alt=""><span class="pv-loading" id="pvLoading">Loading full size…</span></div>
+      <div class="pv-info">
+        ${p.rating ? `<div class="pol-rating">${cones(p.rating)}</div>` : ''}
+        ${p.note ? `<div class="pv-note">“${esc(p.note)}”</div>` : ''}
+        <div class="pv-meta">
+          <b>${esc(p.by)}</b> · ${when.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} · ${when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase()}
+          ${p.country ? `<br>${flagOf(p.country)} ${esc(countryName(p.country))}` : ''}
+          ${shop ? ` · 📍 ${esc(shop)}` : ''}${f && f.key === p.flavour ? ` · ${f.emoji} ${esc(f.name)}` : ''}
+          ${p.paidQty ? `<br>🍦 ${plural(p.paidQty, 'ice cream')} off the debt` : ''}
+        </div>
+        <div class="pv-actions">
+          <button class="btn btn-small" data-pv="save">Save photo</button>
+          ${canDelete ? '<button class="link-btn danger" data-pv="delete">Delete</button>' : ''}
+        </div>
+      </div>`;
+    const img = $('pvImg');
+    photoUrl(id, 'thumb').then((u) => { if (!img.src) img.src = u; }).catch(() => {});
+    photoUrl(id, 'full')
+      .then((u) => { img.src = u; $('pvLoading').hidden = true; })
+      .catch(() => { $('pvLoading').textContent = "Couldn't load the full photo"; });
+
+    $('photoView').onclick = async (e) => {
+      const act = e.target.closest('[data-pv]')?.dataset.pv;
+      if (act === 'close' || e.target === $('photoView')) return closePhoto();
+      if (act === 'save') return savePhoto(id);
+      if (act === 'delete') {
+        const b = e.target.closest('[data-pv]');
+        if (b.dataset.sure !== '1') {
+          b.dataset.sure = '1';
+          b.textContent = p.paidQty ? 'Sure? This also undoes the pay-off' : 'Sure? Tap again';
+          return;
+        }
+        try {
+          const res = await api(`/posts/${id}`, 'DELETE');
+          setState(res.state);
+          closePhoto();
+          renderAll({ animate: true });
+          toast('Polaroid deleted');
+        } catch (err) { handleErr(err); }
+      }
+    };
+  }
+  function closePhoto() {
+    $('photoView').hidden = true;
+    $('photoView').innerHTML = '';
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('photoView').hidden) closePhoto(); });
+
+  // On iPhone the share sheet has "Save Image"; elsewhere fall back to a download.
+  async function savePhoto(id) {
+    try {
+      const url = await photoUrl(id, 'full');
+      const blob = await (await fetch(url)).blob();
+      const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+      const file = new File([blob], `ice-cream-${id}.${ext}`, { type: blob.type });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        a.click();
+      }
+    } catch (err) {
+      if (err && err.name !== 'AbortError') toast("Couldn't save it 🥲");
+    }
+  }
 
   // ---------- case files view ----------
   const fmtDate = (ms) => {
@@ -1498,6 +1755,7 @@
       r.classList.add('pop');
       sfx.yay();
       burst($('wheel'), { colors: [f.color, '#ffffff', '#FFB5C8', '#CDB4FF'], particleCount: 50 });
+      api('/spin', 'POST', { flavour: f.key, name: f.name, emoji: f.emoji }).catch(() => {});
     }, reduceMotion ? 50 : 4300);
   });
 
@@ -1532,10 +1790,31 @@
     });
   }
 
-  function popupHTML(s) {
+  // Average polaroid rating per shop; the best-rated (2+ ratings, or the only rated
+  // shop) gets a crown.
+  function shopRatings() {
+    const r = new Map();
+    (state.posts || []).forEach((p) => {
+      if (!p.shopId || !p.rating) return;
+      const x = r.get(p.shopId) || { sum: 0, n: 0 };
+      x.sum += p.rating;
+      x.n += 1;
+      r.set(p.shopId, x);
+    });
+    let best = null;
+    r.forEach((x, id) => {
+      x.avg = x.sum / x.n;
+      if (!best || x.avg > r.get(best).avg || (x.avg === r.get(best).avg && x.n > r.get(best).n)) best = id;
+    });
+    return { r, best };
+  }
+  const ratingTag = (x) => (x ? `🍦 ${x.avg.toFixed(1)}<small> (${x.n})</small>` : '');
+
+  function popupHTML(s, rating, crowned) {
     const dir = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
-    return `<b>${esc(s.name)}</b>${s.isNext ? ' ⭐' : ''}${s.visited ? ' ✅' : ''}
+    return `<b>${crowned ? '👑 ' : ''}${esc(s.name)}</b>${s.isNext ? ' ⭐' : ''}${s.visited ? ' ✅' : ''}
       ${s.area ? `<div style="color:#8A6A5C">${esc(s.area)}</div>` : ''}
+      ${rating ? `<div style="margin-top:4px">${ratingTag(rating)}${crowned ? ' · our #1 spot' : ''}</div>` : ''}
       ${s.note ? `<div style="margin-top:4px">“${esc(s.note)}”</div>` : ''}
       <div style="display:flex;gap:10px;margin-top:8px">
         <button class="link-btn" style="padding:0" data-shop-edit="${s.id}">Edit</button>
@@ -1544,7 +1823,8 @@
   }
 
   function renderShops() {
-    const sig = JSON.stringify(state.shops);
+    const { r: ratings, best } = shopRatings();
+    const sig = JSON.stringify([state.shops, [...ratings]]);
     if (sig === shopsSig) return;
     shopsSig = sig;
     // The ⭐ next spot is the top priority, so it leads the list.
@@ -1554,8 +1834,8 @@
       ? shops.map((s) => `
         <li class="spot${s.isNext ? ' is-next' : ''}" data-id="${s.id}" tabindex="0">
           <span class="spot-icon">${Art.cone({ scoops: ['strawberry'], expr: s.isNext ? 'closed' : 'happy' })}</span>
-          <span class="spot-main"><span class="spot-name">${esc(s.name)}</span><span class="spot-area" style="display:block">${esc(s.area || s.address || '')}</span></span>
-          <span class="spot-tags">${s.isNext ? '⭐' : ''}${s.visited ? '✅' : ''}</span>
+          <span class="spot-main"><span class="spot-name">${s.id === best ? '👑 ' : ''}${esc(s.name)}</span><span class="spot-area" style="display:block">${esc(s.area || s.address || '')}</span></span>
+          <span class="spot-tags">${ratingTag(ratings.get(s.id))}${s.isNext ? ' ⭐' : ''}${s.visited ? '✅' : ''}</span>
         </li>`).join('')
       : '<li class="muted" style="text-align:center">No spots yet. Add your favourite! 📍</li>';
 
@@ -1567,7 +1847,7 @@
         icon: L.divIcon({ className: '', html: Art.pin(s.isNext), iconSize: [30, 50], iconAnchor: [15, 48], popupAnchor: [0, -46] }),
         title: s.name,
         zIndexOffset: s.isNext ? 1000 : 0, // the ⭐ next spot sits on top of nearby pins
-      }).bindPopup(popupHTML(s));
+      }).bindPopup(popupHTML(s, ratings.get(s.id), s.id === best));
       m.addTo(markers);
       markerById.set(s.id, m);
     });
@@ -1679,6 +1959,64 @@
       }
     );
   }
+
+  // ---------- 🔔 notifications (Home Screen app only on iPhone) ----------
+  const pushSupported = () =>
+    'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && location.protocol === 'https:';
+
+  const b64urlToBytes = (s64) => {
+    const b = atob(s64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s64.length % 4)) % 4));
+    return Uint8Array.from(b, (c) => c.charCodeAt(0));
+  };
+
+  // Must be called straight from a tap: iOS only shows the permission prompt then.
+  async function enablePush() {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return perm;
+    const reg = await navigator.serviceWorker.ready;
+    const { publicKey } = await api('/push/key', 'GET');
+    const key = b64urlToBytes(publicKey);
+    let sub;
+    try {
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    } catch (err) {
+      const old = await reg.pushManager.getSubscription(); // e.g. made with an older key
+      if (!old) throw err;
+      await old.unsubscribe();
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    }
+    await api('/push/subscribe', 'POST', sub.toJSON());
+    return 'granted';
+  }
+
+  // After each login: re-register an existing subscription (so it follows whoever is
+  // logged in on this phone), or offer the banner if notifications aren't on yet.
+  async function syncPush() {
+    $('notifBanner').hidden = true;
+    if (!pushSupported()) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && (await reg.pushManager.getSubscription());
+    if (sub && Notification.permission === 'granted') {
+      api('/push/subscribe', 'POST', sub.toJSON()).catch(() => {});
+      return;
+    }
+    if (Notification.permission === 'denied' || store.get('notifDismissed') === '1') return;
+    $('notifBanner').hidden = false;
+  }
+  $('notifOn').addEventListener('click', async () => {
+    try {
+      const res = await enablePush();
+      $('notifBanner').hidden = true;
+      if (res === 'granted') toast('Notifications on 🔔', { sub: "You'll hear about the other one's ice creams" });
+      else toast('Notifications are off', { sub: 'You can allow them later in Settings → Notifications' });
+    } catch {
+      toast("Couldn't turn them on 🥲", { sub: 'Open the site from the Home Screen icon and try again' });
+    }
+  });
+  $('notifLater').addEventListener('click', () => {
+    store.set('notifDismissed', '1');
+    $('notifBanner').hidden = true;
+  });
 
   // ---------- boot ----------
   sky();

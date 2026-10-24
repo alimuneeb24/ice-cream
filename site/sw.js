@@ -27,3 +27,38 @@ self.addEventListener('fetch', (e) => {
       .catch(() => caches.match(e.request))
   );
 });
+
+// Web Push: the Worker sends { title, body, tag, url } (see worker/src/push.js).
+// iOS requires every push to show a notification, so always show one.
+self.addEventListener('push', (e) => {
+  let data = {};
+  try {
+    data = (e.data && e.data.json()) || {};
+  } catch {
+    data = { body: e.data ? e.data.text() : '' };
+  }
+  const options = {
+    body: data.body || '',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    data: { url: data.url || './' },
+  };
+  // renotify without a tag throws in Chrome, so only set it alongside one.
+  if (data.tag) {
+    options.tag = data.tag;
+    options.renotify = true;
+  }
+  e.waitUntil(self.registration.showNotification(data.title || '🍦 Ice creams', options));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+      const win = wins.find((w) => w.url.startsWith(self.registration.scope)) || wins[0];
+      if (win && 'focus' in win) return win.focus();
+      return self.clients.openWindow(url);
+    })
+  );
+});

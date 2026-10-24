@@ -4,6 +4,8 @@
 // Only two people use this; each has a PIN sent in the X-Pin header.
 // All responses are JSON. Successful calls return { state } (+ the affected item).
 
+import { handlePush, notify } from "./push.js";
+
 const OWE_QTY = 2;
 const COOLDOWN_MS = 3 * 60 * 1000; // global cooldown after any +2
 const UNDO_WINDOW_MS = 60 * 1000; // you can undo your own latest event for 60s
@@ -17,11 +19,13 @@ const MILESTONE_LAST = 1000;
 const COOLDOWN_RESET_SQL = `COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'cooldown_reset_at'), 0)`;
 const OPENS_KEEP_MS = 90 * 24 * 60 * 60 * 1000; // Fiza's visit log is kept for 90 days
 const OPEN_GAP_MS = 2 * 60 * 1000; // away longer than this = a new visit
+const OPEN_NOTIFY_GAP_MS = 10 * 60 * 1000; // at most one "Fiza walked in" ping per 10 minutes
+const MAX_PHOTO_BYTES = 95 * 1024 * 1024; // originals are kept untouched; just under the 100 MB request cap
 const MAX_PIN_TRIES = 10; // wrong PINs from one IP before it gets locked out
 const LOCKOUT_MS = 15 * 60 * 1000;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const cors = corsHeaders(request, env);
 
     // CORS preflight: browsers don't send X-Pin here, so answer before auth.
@@ -61,7 +65,12 @@ export default {
       }
       if (attempt) await db.prepare(`DELETE FROM pin_attempts WHERE ip = ?`).bind(ip).run();
 
-      const result = await route(request, env, me);
+      const result = await route(request, env, me, ctx);
+      if (result instanceof Response) {
+        // Raw responses (photos) still need the CORS headers.
+        for (const [k, v] of Object.entries(cors)) result.headers.set(k, v);
+        return result;
+      }
       return json(result.body, result.status ?? 200, cors);
     } catch (err) {
       if (err instanceof HttpError) return json(err.body, err.status, cors);
@@ -74,19 +83,55 @@ export default {
 // ---------------------------------------------------------------------------
 // Routing
 
-async function route(request, env, me) {
+async function route(request, env, me, ctx) {
   const db = env.DB;
   const { pathname } = new URL(request.url);
   const method = request.method;
   const path = pathname.replace(/\/+$/, "") || "/";
 
+  const pushResult = await handlePush(request, env, me, path, method);
+  if (pushResult) return pushResult;
+
   if (method === "GET" && path === "/state") {
     return ok(await getState(db, me));
   }
-  if (method === "POST" && path === "/owe") return owe(db, me, await readBody(request));
-  if (method === "POST" && path === "/paid") return paid(db, me, await readBody(request));
+  if (method === "POST" && path === "/owe") {
+    const res = await owe(db, me, await readBody(request));
+    const n = res.body.state.totals.pending;
+    tell(ctx, env, me, me === "Fiza"
+      ? { title: "🔔 Caught!", body: `Fiza rang the bell. +2, that's ${n} now 🙄`, tag: "owe" }
+      : { title: "🫡 Muneeb self-reported", body: `+2. Respect. ${n} now.`, tag: "owe" });
+    return res;
+  }
+  if (method === "POST" && path === "/paid") {
+    const res = await paid(db, me, await readBody(request));
+    tell(ctx, env, me, {
+      title: `😋 ${plural(res.body.event.qty, "ice cream")} paid off`,
+      body: `${me} logged it. ${res.body.state.totals.pending} to go.`,
+      tag: "paid",
+    });
+    return res;
+  }
   if (method === "POST" && path === "/undo") return undo(db, me);
   if (method === "POST" && path === "/shops") return createShop(db, me, await readBody(request));
+  if (method === "POST" && path === "/posts") {
+    const res = await createPost(db, env, me, request);
+    const p = res.body.post;
+    const shop = p.shopId && res.body.state.shops.find((s) => s.id === p.shopId)?.name;
+    const bits = [shop, p.rating ? "🍦".repeat(p.rating) : null, p.note ? `“${p.note}”` : null,
+      p.paidQty ? `${plural(p.paidQty, "ice cream")} off the debt` : null].filter(Boolean);
+    tell(ctx, env, me, { title: `📸 New polaroid from ${me}`, body: bits.join(" · ") || "Come see it 👀", tag: "post" });
+    return res;
+  }
+  if (method === "POST" && path === "/spin") {
+    const body = await readBody(request);
+    const name = optText(body, "name", MAX_NAME);
+    const emoji = optText(body, "emoji", 8);
+    if (name) {
+      tell(ctx, env, me, { title: `🎡 ${me} spun the wheel`, body: `Aaj ka flavour: ${name}${emoji ? " " + emoji : ""}`, tag: "spin" });
+    }
+    return { body: { ok: true } };
+  }
 
   let m;
   if (method === "PATCH" && (m = path.match(/^\/events\/(\d+)$/))) {
@@ -97,11 +142,15 @@ async function route(request, env, me) {
     if (method === "PATCH") return updateShop(db, me, id, await readBody(request));
     if (method === "DELETE") return deleteShop(db, me, id);
   }
+  if (method === "GET" && (m = path.match(/^\/posts\/(\d+)\/photo$/))) {
+    return getPhoto(db, env, Number(m[1]), new URL(request.url).searchParams.get("size"));
+  }
+  if (method === "DELETE" && (m = path.match(/^\/posts\/(\d+)$/))) return deletePost(db, env, me, Number(m[1]));
   if (method === "PATCH" && (m = path.match(/^\/milestones\/(\d+)$/))) {
     return writeLetter(db, me, milestone(m[1]), await readBody(request));
   }
   if (method === "POST" && (m = path.match(/^\/milestones\/(\d+)\/open$/))) {
-    return openLetter(db, me, milestone(m[1]));
+    return openLetter(db, me, milestone(m[1]), ctx, env);
   }
   if (method === "POST" && path === "/pin/fiza") {
     return setPin(db, env, me, "fiza", await readBody(request));
@@ -110,8 +159,8 @@ async function route(request, env, me) {
     return setPin(db, env, me, "muneeb", await readBody(request));
   }
 
-  if (method === "POST" && path === "/hello") return recordOpen(db, me, request, await readBody(request));
-  if (method === "POST" && (m = path.match(/^\/hello\/(\d+)$/))) return pingOpen(db, me, request, Number(m[1]));
+  if (method === "POST" && path === "/hello") return recordOpen(db, me, request, await readBody(request), ctx, env);
+  if (method === "POST" && (m = path.match(/^\/hello\/(\d+)$/))) return pingOpen(db, me, request, Number(m[1]), ctx, env);
 
   // Admin (Muneeb only)
   if (path.startsWith("/admin/") && me !== "Muneeb") throw new HttpError(403, { error: "muneeb_only" });
@@ -176,21 +225,135 @@ async function paid(db, me, body) {
     if (!shop) badRequest("shopId does not match a shop");
   }
 
-  // Cap qty at what's pending, and insert nothing if pending is 0 — in one statement.
-  const row = await db
-    .prepare(
-      `INSERT INTO events (type, qty, by, note, flavour, shop_id, created_at)
-       SELECT 'paid', MIN(?1, pending), ?2, ?3, ?4, ?5, ?6
-       FROM (SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) AS pending
-             FROM events)
-       WHERE pending > 0
-       RETURNING *`
-    )
-    .bind(qty, me, note, flavour, shopId, Date.now())
-    .first();
-
+  const row = await db.prepare(PAID_INSERT_SQL).bind(qty, me, note, flavour, shopId, Date.now()).first();
   if (!row) throw new HttpError(409, { error: "nothing_owed" });
   return ok(await getState(db, me), { event: toEvent(row) });
+}
+
+// Cap qty at what's pending, and insert nothing if pending is 0 — in one statement.
+const PAID_INSERT_SQL = `INSERT INTO events (type, qty, by, note, flavour, shop_id, created_at)
+  SELECT 'paid', MIN(?1, pending), ?2, ?3, ?4, ?5, ?6
+  FROM (SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) AS pending FROM events)
+  WHERE pending > 0
+  RETURNING *`;
+
+// Notify the other person (never the one who did it). Runs after the response.
+function tell(ctx, env, me, msg) {
+  ctx.waitUntil(notify(env, me === "Muneeb" ? "Fiza" : "Muneeb", { url: "./", ...msg }));
+}
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// ---- Scrapbook: one polaroid per ice cream, full-size original kept in R2 ----
+
+const photoKey = (id, size) => `posts/${id}/${size === "thumb" ? "thumb" : "original"}`;
+
+// multipart/form-data: photo (original, untouched), thumb (small preview made on the
+// phone), and optional rating 1-5, note, shopId, flavour, paidQty, width, height.
+async function createPost(db, env, me, request) {
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    badRequest("expected multipart form data");
+  }
+  const photo = form.get("photo");
+  const thumb = form.get("thumb");
+  if (!(photo instanceof File) || !photo.size) badRequest("photo is required");
+  if (!/^image\//.test(photo.type || "")) badRequest("photo must be an image");
+  if (photo.size > MAX_PHOTO_BYTES) badRequest("photo is too big");
+  if (!(thumb instanceof File) || !thumb.size) badRequest("thumb is required");
+
+  const field = (k) => {
+    const v = form.get(k);
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  };
+  const int = (k) => (field(k) === null ? null : Number(field(k)));
+  const rating = int("rating");
+  if (rating !== null && !(Number.isInteger(rating) && rating >= 1 && rating <= 5)) badRequest("rating must be 1-5");
+  const shopId = int("shopId");
+  if (shopId !== null) {
+    const shop = Number.isInteger(shopId) && (await db.prepare(`SELECT id FROM shops WHERE id = ?`).bind(shopId).first());
+    if (!shop) badRequest("shopId does not match a shop");
+  }
+  const paidQty = int("paidQty") ?? 0;
+  if (!Number.isInteger(paidQty) || paidQty < 0) badRequest("paidQty must be a whole number");
+  const note = field("note") ? clip(field("note"), MAX_NOTE) : null;
+  const flavour = field("flavour") ? clip(field("flavour"), MAX_NAME) : null;
+  const dim = (k) => (Number.isInteger(int(k)) && int(k) > 0 ? int(k) : null);
+  const now = Date.now();
+
+  // "Counts toward the debt": also log the pay-off (silently skipped if nothing is owed).
+  const paidEvent = paidQty > 0
+    ? await db.prepare(PAID_INSERT_SQL).bind(paidQty, me, note, flavour, shopId, now).first()
+    : null;
+
+  const post = await db
+    .prepare(
+      `INSERT INTO posts (by, created_at, country, rating, note, shop_id, flavour, paid_event_id,
+                          photo_type, photo_bytes, width, height)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+    )
+    .bind(me, now, request.cf?.country || null, rating, note, shopId, flavour, paidEvent?.id ?? null,
+      photo.type, photo.size, dim("width"), dim("height"))
+    .first();
+
+  try {
+    await Promise.all([
+      env.PHOTOS.put(photoKey(post.id, "full"), photo, { httpMetadata: { contentType: photo.type } }),
+      env.PHOTOS.put(photoKey(post.id, "thumb"), thumb, { httpMetadata: { contentType: thumb.type || "image/jpeg" } }),
+    ]);
+  } catch (err) {
+    // Don't leave a polaroid (or a pay-off) behind without its photo.
+    const undo = [db.prepare(`DELETE FROM posts WHERE id = ?`).bind(post.id)];
+    if (paidEvent) undo.push(db.prepare(`DELETE FROM events WHERE id = ?`).bind(paidEvent.id));
+    await db.batch(undo);
+    throw err;
+  }
+  return ok(await getState(db, me), { post: toPost({ ...post, paid_qty: paidEvent?.qty ?? null }) });
+}
+
+// Photos are private: only requests with a valid PIN get here.
+async function getPhoto(db, env, id, size) {
+  const row = await db.prepare(`SELECT id FROM posts WHERE id = ?`).bind(id).first();
+  if (!row) throw new HttpError(404, { error: "not_found" });
+  const obj = await env.PHOTOS.get(photoKey(id, size));
+  if (!obj) throw new HttpError(404, { error: "not_found" });
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",
+      "Content-Length": String(obj.size),
+      "Cache-Control": "private, max-age=31536000, immutable", // a post's photo never changes
+    },
+  });
+}
+
+// The poster can delete their own polaroid; Muneeb can delete any. A polaroid that
+// counted toward the debt takes its pay-off with it.
+async function deletePost(db, env, me, id) {
+  const row = await db.prepare(`SELECT * FROM posts WHERE id = ?`).bind(id).first();
+  if (!row) throw new HttpError(404, { error: "not_found" });
+  if (row.by !== me && me !== "Muneeb") throw new HttpError(403, { error: "not_yours" });
+  await env.PHOTOS.delete([photoKey(id, "full"), photoKey(id, "thumb")]);
+  const steps = [db.prepare(`DELETE FROM posts WHERE id = ?`).bind(id)];
+  if (row.paid_event_id) steps.push(db.prepare(`DELETE FROM events WHERE id = ?`).bind(row.paid_event_id));
+  await db.batch(steps);
+  return ok(await getState(db, me));
+}
+
+function toPost(r) {
+  return {
+    id: r.id,
+    by: r.by,
+    createdAt: r.created_at,
+    country: r.country,
+    rating: r.rating,
+    note: r.note,
+    shopId: r.shop_id,
+    flavour: r.flavour,
+    paidQty: r.paid_qty ?? null,
+    width: r.width,
+    height: r.height,
+  };
 }
 
 async function undo(db, me) {
@@ -310,8 +473,9 @@ async function writeLetter(db, me, at, body) {
 }
 
 // Fiza opens an unlocked envelope (first open wins; Muneeb peeking doesn't count).
-async function openLetter(db, me, at) {
+async function openLetter(db, me, at, ctx, env) {
   if (me !== "Fiza") throw new HttpError(403, { error: "fiza_only" });
+  const before = await db.prepare(`SELECT note, opened_at FROM milestones WHERE at = ?`).bind(at).first();
   const { owed } = await db
     .prepare(`SELECT COALESCE(SUM(qty), 0) AS owed FROM events WHERE type = 'owe'`)
     .first();
@@ -324,6 +488,14 @@ async function openLetter(db, me, at) {
     )
     .bind(at, now)
     .run();
+  if (!before?.opened_at) {
+    const firstLine = before?.note ? before.note.split("\n")[0] : null;
+    ctx.waitUntil(notify(env, "Muneeb", {
+      title: `✉️ Fiza opened your note at ${at}`,
+      body: firstLine ? `“${clip(firstLine, 90)}”` : "No note in that one… she got the upgrade though",
+      tag: `letter-${at}`,
+    }));
+  }
   return ok(await getState(db, me));
 }
 
@@ -347,24 +519,47 @@ async function setPin(db, env, me, who, body) {
 
 // Called once per login. Logs Fiza's visits: logins with her PIN, except from a
 // browser Muneeb has marked as his (`mine`, a flag kept in his own browser).
-async function recordOpen(db, me, request, body) {
+async function recordOpen(db, me, request, body, ctx, env) {
   if (me !== "Fiza" || body.mine === true) return { body: { ok: true } };
-  return { body: { ok: true, openId: await startOpen(db, request) } };
+  return { body: { ok: true, openId: await startOpen(db, request, ctx, env) } };
 }
 
-async function startOpen(db, request) {
+async function startOpen(db, request, ctx, env) {
   const now = Date.now();
   const [row] = await db.batch([
     db.prepare(`INSERT INTO opens (at, country, last_seen) VALUES (?1, ?2, ?1) RETURNING id`)
       .bind(now, request.cf?.country || null),
     db.prepare(`DELETE FROM opens WHERE at < ?`).bind(now - OPENS_KEEP_MS),
   ]);
+  ctx.waitUntil(notifyVisit(db, env, now));
   return row.results[0].id;
+}
+
+// "Fiza walked in" for Muneeb — at most once per OPEN_NOTIFY_GAP_MS so a few
+// reopens in a row don't flood his phone.
+const VISIT_LINES = [
+  ["👀 Fiza walked into the parlour", "Better behave 🍦"],
+  ["🔔 Fiza is in the parlour", "Checking on your debt, probably"],
+  ["👀 Fiza just opened the site", "Agent Aloo is watching too 🥔"],
+  ["🍦 Fiza dropped by", "Quick, think of an excuse"],
+];
+async function notifyVisit(db, env, now) {
+  const claimed = await db
+    .prepare(
+      `INSERT INTO settings (key, value) VALUES ('visit_notified_at', ?1)
+       ON CONFLICT (key) DO UPDATE SET value = ?1 WHERE CAST(value AS INTEGER) < ?2
+       RETURNING value`
+    )
+    .bind(String(now), now - OPEN_NOTIFY_GAP_MS)
+    .first();
+  if (!claimed) return;
+  const [title, body] = VISIT_LINES[Math.floor(Math.random() * VISIT_LINES.length)];
+  await notify(env, "Muneeb", { title, body, tag: "visit" });
 }
 
 // Check-in every ~20s while the page is on screen. After a gap longer than
 // OPEN_GAP_MS (she left and came back) it starts a new visit instead.
-async function pingOpen(db, me, request, id) {
+async function pingOpen(db, me, request, id, ctx, env) {
   if (me !== "Fiza") return { body: { ok: true } };
   const now = Date.now();
   const res = await db
@@ -372,7 +567,7 @@ async function pingOpen(db, me, request, id) {
     .bind(now, id, now - OPEN_GAP_MS)
     .run();
   if (res.meta.changes) return { body: { ok: true, openId: id } };
-  return { body: { ok: true, openId: await startOpen(db, request) } };
+  return { body: { ok: true, openId: await startOpen(db, request, ctx, env) } };
 }
 
 // ---- Admin handlers (route() has already checked me === "Muneeb") ----
@@ -438,7 +633,7 @@ function milestone(raw) {
 // State
 
 async function getState(db, me) {
-  const [events, shops, letters, reset, opens] = await db.batch([
+  const [events, shops, letters, reset, opens, posts] = await db.batch([
     db.prepare(`SELECT * FROM events ORDER BY created_at DESC, id DESC`),
     db.prepare(`SELECT * FROM shops ORDER BY created_at ASC, id ASC`),
     db.prepare(`SELECT * FROM milestones ORDER BY at ASC`),
@@ -446,6 +641,10 @@ async function getState(db, me) {
     // Fiza's open times for the admin page (Muneeb only, last 30 days).
     db.prepare(`SELECT id, at, country, last_seen AS lastSeen FROM opens WHERE ?1 = 'Muneeb' AND at > ?2 ORDER BY at DESC`)
       .bind(me, Date.now() - 30 * 24 * 60 * 60 * 1000),
+    db.prepare(
+      `SELECT p.*, e.qty AS paid_qty FROM posts p LEFT JOIN events e ON e.id = p.paid_event_id
+       ORDER BY p.created_at DESC, p.id DESC`
+    ),
   ]);
   const cooldownResetAt = reset.results[0]?.t ?? 0;
 
@@ -474,6 +673,7 @@ async function getState(db, me) {
     milestones: letters.results
       .filter((r) => me === "Muneeb" || r.at <= owed)
       .map((r) => ({ at: r.at, note: r.note, openedAt: r.opened_at })),
+    posts: posts.results.map(toPost),
     ...(me === "Muneeb" ? { opens: opens.results } : {}),
   };
 }

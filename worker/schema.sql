@@ -64,3 +64,34 @@ CREATE TABLE IF NOT EXISTS opens (
   last_seen INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_opens_at ON opens (at);
+
+-- Web Push subscriptions (one row per browser/device). `who` is whose device it
+-- is; p256dh/auth are the browser's base64url keys from PushSubscription.toJSON().
+-- Rows are deleted when the push service answers 404/410 (subscription gone).
+CREATE TABLE IF NOT EXISTS push_subs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  who        TEXT    NOT NULL,          -- 'Muneeb' or 'Fiza'
+  endpoint   TEXT    NOT NULL UNIQUE,
+  p256dh     TEXT    NOT NULL,
+  auth       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- Scrapbook polaroids. The photo itself lives in R2 (posts/<id>/original and
+-- posts/<id>/thumb); this row is the caption. paid_event_id links the pay-off
+-- when the post counted toward the debt.
+CREATE TABLE IF NOT EXISTS posts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  by            TEXT    NOT NULL,       -- 'Muneeb' or 'Fiza'
+  created_at    INTEGER NOT NULL,
+  country       TEXT,                   -- where it was posted from (flag on the polaroid)
+  rating        INTEGER,                -- 1-5 cones, optional
+  note          TEXT,
+  shop_id       INTEGER,
+  flavour       TEXT,
+  paid_event_id INTEGER,
+  photo_type    TEXT    NOT NULL,
+  photo_bytes   INTEGER,
+  width         INTEGER,
+  height        INTEGER
+);

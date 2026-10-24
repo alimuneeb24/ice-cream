@@ -60,6 +60,11 @@
     <button class="count-pill" id="countPill" aria-label="Back to top">🍦 <b id="pillNum">0</b></button>
 
     <main class="view view-main" id="viewMain">
+      <div class="notif-banner" id="notifBanner" hidden>
+        <span>🔔 Get a ping when the other one rings, posts or spins</span>
+        <button class="btn btn-small" id="notifOn">Turn on</button>
+        <button class="link-btn" id="notifLater" aria-label="Not now">Not now</button>
+      </div>
       <section class="parlour" id="parlour">
         <div class="awning" aria-hidden="true"></div>
         <div class="shop-sign" id="shopSign"></div>
@@ -93,8 +98,14 @@
 
         <div class="pill-row">
           <button class="pill" id="openCases">📁 Case files</button>
-          <button class="pill pill-mint" id="openEat">😋 We had ice cream</button>
+          <button class="pill pill-mint" id="openEat">📸 Ice cream!</button>
         </div>
+      </section>
+
+      <section class="card scrapbook" id="scrapbook">
+        <h2>📸 Scrapbook <span class="scrap-count" id="scrapCount"></span></h2>
+        <div class="scrap-wall" id="scrapWall"></div>
+        <button class="btn btn-small btn-plain scrap-more" id="scrapMore" hidden>Show more</button>
       </section>
 
       <div class="extras">
@@ -153,6 +164,7 @@
     <div id="sheetBody"></div>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
+  <div class="photo-view" id="photoView" role="dialog" aria-modal="true" aria-label="Photo" hidden></div>
   <div class="letter-wrap" id="letter" role="dialog" aria-modal="true" aria-label="A surprise" hidden>
     <div class="letter-stage" id="letterStage"></div>
   </div>
