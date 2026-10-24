@@ -1,5 +1,5 @@
 // Network-first app shell cache, so the page still opens on a flaky connection.
-const CACHE = 'icecream-v1';
+const CACHE = 'icecream-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'art.js', 'app.js', 'icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
@@ -18,7 +18,9 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return; // never cache the API
   e.respondWith(
-    fetch(e.request)
+    // no-cache: always check with the server (cheap 304 if unchanged), so a fresh
+    // deploy shows up on the next open instead of after GitHub's 10-minute cache.
+    fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(e.request, copy));

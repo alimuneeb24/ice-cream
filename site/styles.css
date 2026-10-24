@@ -880,5 +880,5 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
   .photo-view { padding: 28px 24px; }
   .pv-card { margin-top: 20px; }
 }
-.pv-reacts { flex-wrap: nowrap; gap: 10px; }
+.pv-reacts { flex-wrap: wrap; gap: 10px; }
 .pv-reacts .react { width: 48px; height: 48px; font-size: 24px; flex: 0 0 auto; }
