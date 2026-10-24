@@ -360,7 +360,7 @@ async function deletePost(db, env, me, id) {
 
 // ---- Reactions + comments on polaroids ----
 
-const REACTIONS = ["🍦", "🍨", "🍧", "😋", "😂", "🔥", "👀", "😭", "🫡", "❤️", "🩷", "💛", "🤍"];
+const REACTIONS = ["🍦", "🍨", "😋", "❤️", "🤍"];
 
 async function postOrThrow(db, id) {
   const post = await db.prepare(`SELECT id, by, note FROM posts WHERE id = ?`).bind(id).first();

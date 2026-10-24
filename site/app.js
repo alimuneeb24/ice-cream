@@ -1587,7 +1587,7 @@
 
   // Reactions + comments under the open photo (re-rendered when state refreshes;
   // the comment box itself is left alone so a half-typed message survives).
-  const REACTIONS = ['🍦', '🍨', '🍧', '😋', '😂', '🔥', '👀', '😭', '🫡', '❤️', '🩷', '💛', '🤍'];
+  const REACTIONS = ['🍦', '🍨', '😋', '❤️', '🤍'];
   let openPhotoId = null;
 
   function renderPhotoSocial() {
