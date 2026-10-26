@@ -114,3 +114,27 @@ CREATE TABLE IF NOT EXISTS post_comments (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_post_comments_post ON post_comments (post_id, created_at);
+
+-- 🎮 Scoop Stack: one row per finished round. day/month are Karachi dates
+-- ('YYYY-MM-DD' / 'YYYY-MM'): days make the streaks, months make the race.
+CREATE TABLE IF NOT EXISTS game_scores (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  who        TEXT    NOT NULL,          -- 'Muneeb' or 'Fiza'
+  score      INTEGER NOT NULL,          -- scoops stacked
+  day        TEXT    NOT NULL,
+  month      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_game_scores_month ON game_scores (month, who);
+
+-- Settled monthly races (written by the nightly cron). The loser owes the winner
+-- `qty` ice creams: a separate tally from the "baad mein bataonga" count.
+CREATE TABLE IF NOT EXISTS game_months (
+  month       TEXT PRIMARY KEY,         -- 'YYYY-MM'
+  fiza_best   INTEGER,                  -- NULL = didn't play that month
+  muneeb_best INTEGER,
+  winner      TEXT,                     -- NULL = tie, or nobody played
+  qty         INTEGER NOT NULL,         -- 2, or 0 when nobody owes
+  paid_at     INTEGER,
+  settled_at  INTEGER NOT NULL
+);

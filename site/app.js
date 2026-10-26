@@ -302,6 +302,7 @@
       $('bellTitle').textContent = `${C.HIM} said baad mein bataonga! 🙄`;
       $('standEmpty').innerHTML = `${Art.cone({ scoops: [], expr: 'sleepy' })}<p>Stand's empty!</p>`;
       $('stool').insertAdjacentHTML('beforeend', Art.stool());
+      $('gameIcon').innerHTML = Art.stack();
       $('alooId').innerHTML = `${Art.aloo()}<div><div class="id-title">FIA AGENT ID</div><dl>
         <dt>Name:</dt> <dd>Agent Aloo</dd>
         <dt>Agency:</dt> <dd>Fiza Investigation Aloo</dd>
@@ -318,6 +319,7 @@
     $('adminBtn').hidden = !isHim();
     showView(viewFromHash(), false);
     if (/#post-\d+/.test(location.hash)) openDeepLink(location.hash);
+    if (location.hash === '#game') openDeepLink(location.hash);
     if (pendingPost) { const id = pendingPost; pendingPost = null; setTimeout(() => openPhoto(id), 300); }
     clearInterval(pollTimer);
     pollTimer = setInterval(() => { if (document.visibilityState === 'visible') { refresh(); pingOpen(); } }, C.POLL_MS);
@@ -369,6 +371,7 @@
     renderAdmin();
     renderScrapbook();
     renderPhotoSocial();
+    renderGame();
     const mode = opts.intro ? 'intro' : opts.animate ? 'animate' : 'instant';
     standQueue = standQueue.then(() => drawStand(p, mode)).then(() => setTally(state.totals.pending));
     return standQueue;
@@ -994,6 +997,8 @@
         <button class="btn btn-small" data-admin="unfreeze" id="adminUnfreeze">Unfreeze now</button>
       </section>
 
+      ${adminGameCard()}
+
       <section class="admin-card admin-wide">
         <h2>📜 Rings & ice creams</h2>
         <p class="muted small">Delete anything that shouldn't be there, e.g. an accidental ring. Tap Delete twice to confirm.</p>
@@ -1028,6 +1033,32 @@
         </div>
       </section>`;
     updateAdminBell();
+  }
+
+  function adminGameCard() {
+    const g = state.game;
+    if (!g) return '';
+    const rounds = g.rounds || [];
+    return `<section class="admin-card">
+        <h2>🎮 Scoop Stack</h2>
+        <p>${[C.HER, C.HIM].map((p) => `${esc(p)}: <b>${plural(g.players[p].rounds, 'round')}</b>`).join(' · ')}</p>
+        <details class="day-folder">
+          <summary>📁 <b>Recent rounds</b> · last ${rounds.length}</summary>
+          <ul class="admin-list">
+            ${rounds.map((r) => `<li>
+              <span><b>${r.score}</b> · ${esc(r.who)} · ${fmtDate(r.createdAt)}</span>
+              <button class="link-btn danger" data-del-score="${r.id}">Delete</button>
+            </li>`).join('') || '<li class="muted">No rounds yet.</li>'}
+          </ul>
+        </details>
+        ${g.months.length ? `<h3 class="opens-h">Races</h3><ul class="admin-list">
+          ${g.months.map((m) => `<li>
+            <span><b>${esc(monthLabel(m.month))}</b> · ${m.winner ? `${esc(m.winner)} won` : 'nobody owes'}${m.winner ? ` · ${m.paidAt ? 'paid ✓' : 'not paid yet'}` : ''}</span>
+            ${m.paidAt ? `<button class="link-btn" data-unpay="${m.month}">Mark unpaid</button>` : ''}
+          </li>`).join('')}
+        </ul>` : ''}
+        <p class="muted small">Delete a fake or accidental score. Deleting one from a finished month re-scores that race.</p>
+      </section>`;
   }
 
   function updateAdminBell() {
@@ -1073,14 +1104,14 @@
     if (t.dataset.letterEdit) return openLetterEditor(+t.dataset.letterEdit);
     if (t.dataset.reseal) return adminCall(`/admin/milestones/${t.dataset.reseal}/reseal`, 'POST', {}, 'Envelope re-sealed ✉️');
     if (t.dataset.del) {
-      if (t.dataset.sure !== '1') {
-        t.dataset.sure = '1';
-        t.textContent = 'Sure? Tap again';
-        setTimeout(() => { if (t.isConnected) { t.dataset.sure = ''; t.textContent = 'Delete'; } }, 3000);
-        return;
-      }
+      if (!confirmTap(t, 'Sure? Tap again')) return;
       return adminCall(`/admin/events/${t.dataset.del}`, 'DELETE', null, 'Deleted 🗑️');
     }
+    if (t.dataset.delScore) {
+      if (!confirmTap(t, 'Sure? Tap again')) return;
+      return adminCall(`/admin/game/scores/${t.dataset.delScore}`, 'DELETE', null, 'Score deleted 🗑️');
+    }
+    if (t.dataset.unpay) return adminCall(`/admin/game/months/${t.dataset.unpay}/unpaid`, 'POST', {}, 'Marked unpaid');
   });
 
   // who: 'fiza' (reset hers) or 'muneeb' (change his own, typed twice).
@@ -1420,7 +1451,7 @@
   // ---------- 📸 scrapbook: polaroid wall + full-size viewer ----------
   const photoUrls = new Map(); // `${id}:${size}` → object URL (photos never change)
   let freshPostId = null;
-  let scrapShown = 6;
+  let scrapShown = 4;
 
   async function photoUrl(id, size) {
     const key = `${id}:${size}`;
@@ -1636,6 +1667,11 @@
   // Deep links from notifications: #post-<id> opens that photo once logged in.
   let pendingPost = null;
   function openDeepLink(url) {
+    if (/#game$/.test(url || '')) {
+      history.replaceState(null, '', location.pathname);
+      if (state && !$('app').hidden) { showView('main', false); scrollToGame(); }
+      return true;
+    }
     const m = /#post-(\d+)/.exec(url || '');
     if (!m) return false;
     pendingPost = +m[1];
@@ -1673,6 +1709,247 @@
       if (err && err.name !== 'AbortError') toast("Couldn't save it 🥲");
     }
   }
+
+  // ---------- 🎮 Scoop Stack: card ----------
+  const monthLabel = (m, month = 'long') => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('en-GB', { month, timeZone: 'UTC' });
+  const otherPlayer = () => (state.me === C.HIM ? C.HER : C.HIM);
+
+  function renderGame() {
+    const g = state.game;
+    if (!g) return;
+    const racing = g.month >= g.firstRace;
+    const mb = (p) => g.players[p].monthBest || 0;
+    const leader = mb(C.HER) > mb(C.HIM) ? C.HER : mb(C.HIM) > mb(C.HER) ? C.HIM : null;
+    $('gameSub').innerHTML = racing
+      ? `${esc(monthLabel(g.month))} race · ${g.daysLeft === 1 ? '<b>last day!</b> ⏳' : `${g.daysLeft} days left`} · loser owes ${g.stake} 🍦`
+      : `Practice month · races start 1 ${esc(monthLabel(g.firstRace, 'short'))}`;
+    $('gameBoard').innerHTML = [C.HER, C.HIM].map((p) => {
+      const s = g.players[p];
+      const sub = [s.best ? `best ever ${s.best}` : 'no rounds yet', s.streak ? `🔥 ${plural(s.streak, 'day')}` : ''].filter(Boolean).join(' · ');
+      return `<li class="gp${p === leader ? ' lead' : ''}">
+        <span class="gp-name">${esc(p)}${p === leader ? ' 👑' : ''}</span>
+        <span class="gp-sub">${sub}</span>
+        <b class="gp-score">${s.monthBest ?? '—'}<small>this month</small></b>
+      </li>`;
+    }).join('');
+    const me = g.players[state.me];
+    $('gameHint').textContent = me.playedToday ? ''
+      : me.streak ? `🔥 Play today to keep your ${me.streak}-day streak`
+        : me.rounds ? 'Play a round today to start a streak 🔥' : '';
+    $('gameDebts').innerHTML = g.months.filter((m) => m.winner && !m.paidAt).map((m) => {
+      const loser = m.winner === C.HER ? C.HIM : C.HER;
+      return `<div class="game-debt">
+        <span>🍦 <b>${esc(loser)}</b> owes ${esc(m.winner)} ${m.qty} · ${esc(monthLabel(m.month, 'short'))}</span>
+        <button class="btn btn-small btn-plain" data-game-paid="${m.month}">Paid ✓</button>
+      </div>`;
+    }).join('');
+  }
+
+  $('playBtn').addEventListener('click', openGame);
+  $('gameDebts').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-game-paid]');
+    if (!b || !confirmTap(b, 'Sure? Tap again')) return;
+    try {
+      const res = await api(`/game/months/${b.dataset.gamePaid}/paid`, 'POST', {});
+      setState(res.state);
+      renderAll();
+      sfx.yay();
+      burst($('gameCard'));
+      toast('Game debt paid 😋', { sub: 'All square 🤝' });
+    } catch (err) { handleErr(err); }
+  });
+
+  // Destructive or money-ish buttons: the first tap asks, the second one does it.
+  function confirmTap(btn, ask) {
+    if (btn.dataset.sure === '1') return true;
+    const label = btn.textContent;
+    btn.dataset.sure = '1';
+    btn.textContent = ask;
+    setTimeout(() => { if (btn.isConnected) { btn.dataset.sure = ''; btn.textContent = label; } }, 3000);
+    return false;
+  }
+
+  // ---------- 🎮 Scoop Stack: playing ----------
+  const GAME_MARKS = [{ at: 15, label: `${C.HER}'s height 📏` }];
+  let game = null;
+  let bannerTimer;
+  let alooTimerG;
+
+  function openGame() {
+    $('gameView').hidden = false;
+    document.documentElement.style.overflow = 'hidden';
+    if (!game) game = ScoopStack($('gameCanvas'), { flavours: C.FLAVOURS, marks: GAME_MARKS, onEvent: onGameEvent });
+    $('gameAloo').innerHTML = `<div class="aloo-bubble">FIA is impressed 🔍</div>${Art.aloo()}`;
+    setGameScore(0, false);
+    gameBest();
+    gamePanel('ready');
+  }
+
+  function closeGame() {
+    if (game) { game.destroy(); game = null; }
+    $('gameView').hidden = true;
+    $('gamePanel').innerHTML = '';
+    $('gameBanner').classList.remove('show');
+    $('gameAloo').classList.remove('show');
+    document.documentElement.style.overflow = '';
+  }
+
+  function startRound() {
+    if (!game) return;
+    $('gamePanel').innerHTML = '';
+    setGameScore(0, false);
+    game.start();
+    sfx.tap();
+    api('/game/start', 'POST', {}).catch(() => {}); // "X is playing" (the server rate-limits it)
+  }
+
+  function gameBest() {
+    const s = state.game && state.game.players[state.me];
+    $('gameBest').textContent = s && s.best ? `best ${s.best}` : '';
+  }
+
+  function setGameScore(n, bump = true) {
+    const el = $('gameScore');
+    el.textContent = n;
+    if (!bump) return;
+    el.classList.remove('bump');
+    void el.offsetWidth;
+    el.classList.add('bump');
+  }
+
+  function gamePop(text) {
+    const el = $('gamePop');
+    el.textContent = text;
+    el.classList.remove('show');
+    void el.offsetWidth;
+    el.classList.add('show');
+  }
+
+  function gameBanner(text, ms = 2600) {
+    const el = $('gameBanner');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => el.classList.remove('show'), ms);
+  }
+
+  function onGameEvent(type, d) {
+    if (type === 'land') {
+      setGameScore(d.score);
+      buzz(12);
+      if (d.perfect) {
+        [1047, 1319, 1568].forEach((f, i) => tone(f + d.combo * 40, 0.18, { vol: 0.09, delay: i * 0.05 }));
+        gamePop(d.grew ? 'perfect! bigger scoop ✨' : d.combo > 1 ? `perfect ×${d.combo} ✨` : 'perfect! ✨');
+      } else {
+        tone(300 + Math.min(d.score, 40) * 12, 0.13, { vol: 0.2, to: 700 + Math.min(d.score, 40) * 12 });
+      }
+      if (d.mark) {
+        gameBanner(state.me === C.HER ? 'This tower is officially taller than you now, bauni 😌📏' : `This tower is officially taller than ${C.HER} 📏`);
+      }
+      if (d.score === 25) {
+        $('gameAloo').classList.add('show');
+        clearTimeout(alooTimerG);
+        alooTimerG = setTimeout(() => $('gameAloo').classList.remove('show'), 2800);
+      }
+      if (d.score % 10 === 0) {
+        sfx.yay();
+        burst($('gameScore'), { particleCount: 50, startVelocity: 26 });
+      }
+    } else if (type === 'miss') {
+      sfx.nope();
+      buzz([30, 40, 30]);
+    } else if (type === 'over') {
+      gameOver(d.score, d.ms);
+    }
+  }
+
+  const overTitle = (n) => (n < 5 ? 'Brainless 🤦' : n < 15 ? 'Not bad! 😌' : n < 25 ? 'Kya baat hai! 🤩' : 'Legend 🍦👑');
+
+  async function gameOver(score, ms) {
+    gamePanel('over', { score, lines: score ? ['<li class="muted">Saving…</li>'] : ['<li class="muted">Warm-up round 🙈</li>'] });
+    if (!score) return;
+    try {
+      const res = await api('/game/score', 'POST', { score, ms });
+      setState(res.state);
+      renderAll();
+      gameBest();
+      const r = res.result;
+      const g = state.game;
+      const other = otherPlayer();
+      const lines = [];
+      if (r.tookRecord) lines.push(`🏆 You took the all-time record from ${esc(other)}!`);
+      else if (r.record) lines.push('🏆 New all-time record!');
+      else if (r.personalBest) lines.push('🎉 New personal best!');
+      if (r.tookLead) lines.push(`👑 You lead the ${esc(monthLabel(g.month))} race!`);
+      const me = g.players[state.me];
+      if (me.streak > 1 && me.rounds && !lines.length) lines.push(`🔥 ${me.streak}-day streak`);
+      const theirs = g.players[other].monthBest;
+      lines.push(`<li class="muted">This month: you ${me.monthBest ?? 0} · ${esc(other)} ${theirs ?? 0}</li>`);
+      gamePanel('over', { score, lines: lines.map((l) => (l.startsWith('<li') ? l : `<li>${l}</li>`)) });
+      if (r.record || r.personalBest || r.tookLead) {
+        sfx.yay();
+        burst($('gamePanel').querySelector('.gp-card'), { particleCount: 90 });
+      }
+    } catch (err) {
+      if (err.status === 401 || (err.status === 429 && err.data.error === 'locked')) { closeGame(); return lockOut(); }
+      gamePanel('over', { score, lines: ['<li class="muted">Couldn\'t save this one 🥲</li>'] });
+    }
+  }
+
+  function gamePanel(kind, { score, lines = [] } = {}) {
+    const g = state.game;
+    const s = g && g.players[state.me];
+    if (kind === 'ready') {
+      const other = otherPlayer();
+      const theirs = g && g.players[other].best;
+      $('gamePanel').innerHTML = `<div class="gp-card">
+        <div class="gp-art">${Art.stack()}</div>
+        <h3>Scoop Stack</h3>
+        <p>Tap anywhere to drop the scoop. Land it off-centre and the extra melts off. Miss the tower and you're brainless 🤦</p>
+        <p class="muted">Your best: ${s && s.best ? s.best : '—'} · ${esc(other)}'s: ${theirs || '—'}</p>
+        <div class="sheet-actions"><button class="btn" data-g="start">Tap to start 🍦</button></div>
+      </div>`;
+      return;
+    }
+    $('gamePanel').innerHTML = `<div class="gp-card">
+      <h3>${overTitle(score)}</h3>
+      <div class="gp-big">${score}</div>
+      <div class="muted">${score === 1 ? 'scoop' : 'scoops'}</div>
+      <ul class="gp-lines">${lines.join('')}</ul>
+      <div class="sheet-actions">
+        <button class="btn btn-plain" data-g="close">Done</button>
+        <button class="btn" data-g="start" disabled>Again ↻</button>
+      </div>
+    </div>`;
+    // A beat before "Again" works, so the tap that missed can't start a new round.
+    const again = $('gamePanel').querySelector('[data-g="start"]');
+    setTimeout(() => { again.disabled = false; }, 600);
+  }
+
+  $('gamePanel').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-g]');
+    if (!b) return;
+    if (b.dataset.g === 'start') startRound();
+    if (b.dataset.g === 'close') closeGame();
+  });
+  $('gameClose').addEventListener('click', closeGame);
+  // Tap anywhere (pointerdown, so it feels instant) to drop the scoop.
+  $('gameView').addEventListener('pointerdown', (e) => {
+    if (!game || game.mode !== 'play' || e.target.closest('button, .gp-card')) return;
+    e.preventDefault();
+    game.drop();
+  });
+  document.addEventListener('keydown', (e) => {
+    if ($('gameView').hidden) return;
+    if (e.key === 'Escape') return closeGame();
+    if ((e.key === ' ' || e.key === 'Enter') && game && game.mode === 'play') {
+      e.preventDefault();
+      game.drop();
+    }
+  });
+  addEventListener('resize', () => { if (game) game.resize(); });
+
+  const scrollToGame = () => setTimeout(() => $('gameCard').scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' }), 400);
 
   // ---------- case files view ----------
   const fmtDate = (ms) => {
@@ -1716,6 +1993,10 @@
       if (fastest === null || g < fastest) fastest = g;
     }
     const selfReports = real.filter((e) => e.by === C.HIM).length;
+    const players = state.game ? Object.entries(state.game.players) : [];
+    const topBy = (k) => players.reduce((a, [p, s]) => (s[k] > (a ? a.n : 0) ? { p, n: s[k] } : a), null);
+    const record = topBy('best');
+    const longest = topBy('bestStreak');
     const stats = [
       [days === null ? '—' : days === 0 ? 'Today' : plural(days, 'day'), days === 0 ? 'last “baad mein bataonga”' : 'since the last one'],
       [counts, 'times said, all time'],
@@ -1723,9 +2004,20 @@
       [worst ? worst[0].split(' ')[0] : '—', worst ? `worst month (${worst[1]}×)` : 'worst month'],
       [fastest === null ? '—' : fmtGap(fastest), 'fastest repeat'],
       [selfReports, `self-reports by ${C.HIM} 🫡`],
+      [record ? record.n : '—', record ? `Scoop Stack record (${record.p}) 🏆` : 'Scoop Stack record 🏆'],
+      [longest ? plural(longest.n, 'day') : '—', longest ? `longest game streak (${longest.p}) 🔥` : 'longest game streak 🔥'],
     ];
     renderSurprises();
     $('stats').innerHTML = stats.map(([b, s]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
+    const races = (state.game && state.game.months) || [];
+    $('races').hidden = !races.length;
+    $('races').innerHTML = `<h2>🏁 Scoop Stack races</h2><ul>${races.map((m) => {
+      const score = (p) => (m.best[p] === null ? 'no-show' : m.best[p]);
+      const result = m.winner
+        ? `${esc(m.winner)} won 👑 · ${m.paidAt ? 'paid ✓' : `${esc(m.winner === C.HER ? C.HIM : C.HER)} owes ${m.qty} 🍦`}`
+        : m.best[C.HER] === null && m.best[C.HIM] === null ? 'nobody played' : 'a tie 🤝';
+      return `<li><b>${esc(monthLabel(m.month))}</b> · ${esc(C.HER)} ${score(C.HER)} – ${score(C.HIM)} ${esc(C.HIM)} · ${result}</li>`;
+    }).join('')}</ul>`;
 
     const shopName = (id) => (state.shops.find((s) => s.id === id) || {}).name;
     const next = new Map();

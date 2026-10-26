@@ -61,7 +61,7 @@
 
     <main class="view view-main" id="viewMain">
       <div class="notif-banner" id="notifBanner" hidden>
-        <span>🔔 Get a ping when the other one rings, posts or spins</span>
+        <span>🔔 Get a ping when the other one rings, posts, spins or plays</span>
         <button class="btn btn-small" id="notifOn">Turn on</button>
         <button class="link-btn" id="notifLater" aria-label="Not now">Not now</button>
       </div>
@@ -108,6 +108,20 @@
         <button class="btn btn-small btn-plain scrap-more" id="scrapMore" hidden>Show more</button>
       </section>
 
+      <section class="card game-card" id="gameCard">
+        <div class="game-top">
+          <span class="game-icon" id="gameIcon" aria-hidden="true"></span>
+          <div class="game-title">
+            <h2>Scoop Stack</h2>
+            <p class="muted" id="gameSub"></p>
+          </div>
+          <button class="btn game-play" id="playBtn">Play ▶</button>
+        </div>
+        <ul class="game-board" id="gameBoard"></ul>
+        <p class="game-hint" id="gameHint"></p>
+        <div id="gameDebts"></div>
+      </section>
+
       <div class="extras">
         <section class="card wheel-card">
           <h2>Can't decide? Spin it 🎡</h2>
@@ -145,6 +159,7 @@
         <div>
           <section class="surprises" id="surprises"></section>
           <div class="stats" id="stats"></div>
+          <section class="races" id="races" hidden></section>
           <ol class="cases" id="cases"></ol>
         </div>
       </div>
@@ -165,6 +180,18 @@
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
   <div class="photo-view" id="photoView" role="dialog" aria-modal="true" aria-label="Photo" hidden></div>
+  <div class="game-view" id="gameView" role="dialog" aria-modal="true" aria-label="Scoop Stack" hidden>
+    <canvas id="gameCanvas"></canvas>
+    <div class="game-hud">
+      <button class="icon-btn" id="gameClose" aria-label="Close">✕</button>
+      <div class="game-score" id="gameScore" aria-live="polite">0</div>
+      <div class="game-best" id="gameBest"></div>
+    </div>
+    <div class="game-pop" id="gamePop" aria-hidden="true"></div>
+    <div class="game-banner" id="gameBanner" aria-live="polite"></div>
+    <div class="game-aloo" id="gameAloo" aria-hidden="true"></div>
+    <div class="game-panel" id="gamePanel"></div>
+  </div>
   <div class="letter-wrap" id="letter" role="dialog" aria-modal="true" aria-label="A surprise" hidden>
     <div class="letter-stage" id="letterStage"></div>
   </div>
@@ -173,6 +200,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="config.js?v=__V__"></script>
   <script src="art.js?v=__V__"></script>
+  <script src="game.js?v=__V__"></script>
   <script src="app.js?v=__V__"></script>
 </body>
 </html>

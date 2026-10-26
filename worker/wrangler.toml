@@ -18,3 +18,8 @@ bucket_name = "icecream-photos"
 ALLOWED_ORIGINS = "https://alimuneeb24.github.io"
 
 # PIN_MUNEEB and PIN_FIZA are secrets: .dev.vars locally, `wrangler secret put` in production.
+
+# 🎮 Scoop Stack: settle last month's race just after midnight Karachi time
+# (19:05 UTC), and send the last-day reminder at 6 pm Karachi (13:00 UTC).
+[triggers]
+crons = ["5 19 * * *", "0 13 * * *"]

@@ -1,6 +1,6 @@
 // Network-first app shell cache, so the page still opens on a flaky connection.
-const CACHE = 'icecream-v2';
-const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'art.js', 'app.js', 'icons/icon.svg'];
+const CACHE = 'icecream-v3';
+const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'art.js', 'game.js', 'app.js', 'icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

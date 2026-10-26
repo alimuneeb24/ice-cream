@@ -300,6 +300,24 @@
     );
   }
 
+  // Scoop Stack card icon: a cone with a slightly wobbly tower of scoops.
+  function stack() {
+    const id = 'cw' + ++uid;
+    const scoops = ['strawberry', 'mango', 'blueberry', 'chocolate']
+      .map((k, i) => `<g transform="translate(${60 + [0, 5, -4, 3][i]} ${94 - i * 30}) scale(${0.92 - i * 0.04})">${scoop(k)}${i === 3 ? face('closed', 0, -14, 0.7) : ''}</g>`)
+      .join('');
+    return (
+      `<svg class="stack-svg" viewBox="0 -44 120 244" aria-hidden="true">` +
+      `<defs><clipPath id="${id}"><path d="${CONE}"/></clipPath></defs>` +
+      `<path d="${CONE}" fill="#F7CD96"/>` +
+      `<g clip-path="url(#${id})" stroke="#E5A867" stroke-width="2.4" opacity=".55">${waffle()}</g>` +
+      `<path d="${CONE}" fill="none" stroke="${INK}" stroke-width="3" stroke-linejoin="round"/>` +
+      face('happy', 60, 130) +
+      scoops +
+      `</svg>`
+    );
+  }
+
   // Small cone for map pins.
   function pin(starred) {
     return (
@@ -310,5 +328,5 @@
     );
   }
 
-  window.Art = { cone, scoop, face, bell, aloo, mugshot, pin, flavour, flag, pot, cat, balloon, crown, stool, envelope };
+  window.Art = { cone, scoop, face, bell, aloo, mugshot, pin, flavour, flag, pot, cat, balloon, crown, stool, envelope, stack };
 })();

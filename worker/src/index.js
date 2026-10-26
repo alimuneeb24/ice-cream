@@ -79,6 +79,11 @@ export default {
       return json({ error: "server_error" }, 500, cors);
     }
   },
+
+  // Cron (see wrangler.toml): settles finished Scoop Stack races + the last-day reminder.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(gameCron(env, event.scheduledTime || Date.now()));
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -133,8 +138,13 @@ async function route(request, env, me, ctx) {
     }
     return { body: { ok: true } };
   }
+  if (method === "POST" && path === "/game/start") return gameStart(db, env, me, ctx);
+  if (method === "POST" && path === "/game/score") return gameScore(db, env, me, await readBody(request), ctx);
 
   let m;
+  if (method === "POST" && (m = path.match(/^\/game\/months\/(\d{4}-\d{2})\/paid$/))) {
+    return gamePaid(db, env, me, m[1], ctx);
+  }
   if (method === "PATCH" && (m = path.match(/^\/events\/(\d+)$/))) {
     return editEventNote(db, me, Number(m[1]), await readBody(request));
   }
@@ -187,6 +197,13 @@ async function route(request, env, me, ctx) {
   }
   if (method === "POST" && (m = path.match(/^\/admin\/milestones\/(\d+)\/reseal$/))) {
     return adminReseal(db, me, milestone(m[1]));
+  }
+  if (method === "DELETE" && (m = path.match(/^\/admin\/game\/scores\/(\d+)$/))) {
+    return adminDeleteScore(db, me, Number(m[1]));
+  }
+  if (method === "POST" && (m = path.match(/^\/admin\/game\/months\/(\d{4}-\d{2})\/unpaid$/))) {
+    await db.prepare(`UPDATE game_months SET paid_at = NULL WHERE month = ?`).bind(m[1]).run();
+    return ok(await getState(db, me));
   }
 
   throw new HttpError(404, { error: "not_found" });
@@ -706,10 +723,248 @@ function milestone(raw) {
 }
 
 // ---------------------------------------------------------------------------
+// 🎮 Scoop Stack: rounds, streaks, and a monthly race (loser owes the winner 2)
+
+const GAME_FIRST_RACE = "2026-11"; // October 2026 is a practice month
+const GAME_STAKE = 2;
+const GAME_MAX_SCORE = 999;
+const GAME_MIN_MS_PER_SCOOP = 250; // each drop takes ~350 ms in the game, so faster is fake
+const GAME_PLAY_NOTIFY_GAP_MS = 30 * 60 * 1000; // "X is playing" at most every 30 min per player
+const PLAYERS = ["Fiza", "Muneeb"];
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+
+// Karachi is UTC+5 all year (no DST), so shifting by 5 h and reading the UTC fields
+// gives Karachi dates.
+const pk = (ms) => new Date(ms + 5 * 60 * 60 * 1000);
+const pkDay = (ms) => pk(ms).toISOString().slice(0, 10);
+const pkMonth = (ms) => pk(ms).toISOString().slice(0, 7);
+const monthName = (m) => MONTH_NAMES[Number(m.slice(5, 7)) - 1];
+const nextMonth = (m) => {
+  const [y, mo] = m.split("-").map(Number);
+  return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`;
+};
+const otherOf = (me) => (me === "Muneeb" ? "Fiza" : "Muneeb");
+
+const PLAY_LINES = ["Better guard your score 👀", "Practising for the race, probably", "Stacking scoops instead of sleeping 🌙"];
+
+async function gameStart(db, env, me, ctx) {
+  const now = Date.now();
+  const claimed = await db
+    .prepare(
+      `INSERT INTO settings (key, value) VALUES (?1, ?2)
+       ON CONFLICT (key) DO UPDATE SET value = ?2 WHERE CAST(value AS INTEGER) < ?3
+       RETURNING value`
+    )
+    .bind(`game_play_notified_${me.toLowerCase()}`, String(now), now - GAME_PLAY_NOTIFY_GAP_MS)
+    .first();
+  if (claimed) {
+    tell(ctx, env, me, {
+      title: `🎮 ${me} is playing Scoop Stack`,
+      body: PLAY_LINES[Math.floor(Math.random() * PLAY_LINES.length)],
+      tag: "game-play",
+      url: "./#game",
+    });
+  }
+  return { body: { ok: true } };
+}
+
+// { score, ms }: one finished round. Notifies the other person only on the rare,
+// exciting ones: taking the month's lead, or taking the all-time record off them.
+async function gameScore(db, env, me, body, ctx) {
+  const { score, ms } = body;
+  if (!Number.isInteger(score) || score < 1 || score > GAME_MAX_SCORE) badRequest(`score must be 1-${GAME_MAX_SCORE}`);
+  if (!Number.isInteger(ms) || ms < score * GAME_MIN_MS_PER_SCOOP) badRequest("that was suspiciously fast 🤨");
+  const now = Date.now();
+  const month = pkMonth(now);
+  const other = otherOf(me);
+
+  const [before] = await db.batch([
+    db.prepare(
+      `SELECT who, MAX(score) AS best, MAX(CASE WHEN month = ?1 THEN score END) AS month_best
+       FROM game_scores GROUP BY who`
+    ).bind(month),
+    db.prepare(`INSERT INTO game_scores (who, score, day, month, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(me, score, pkDay(now), month, now),
+  ]);
+  const prev = Object.fromEntries(before.results.map((r) => [r.who, r]));
+  const myBest = prev[me]?.best ?? 0;
+  const theirBest = prev[other]?.best ?? 0;
+  const myMonth = prev[me]?.month_best ?? 0;
+  const theirMonth = prev[other]?.month_best ?? 0;
+
+  const racing = month >= GAME_FIRST_RACE;
+  const result = {
+    score,
+    personalBest: score > myBest,
+    record: score > Math.max(myBest, theirBest),
+    tookRecord: theirBest > 0 && myBest <= theirBest && score > theirBest,
+    tookLead: racing && myMonth <= theirMonth && score > theirMonth,
+  };
+
+  const mName = monthName(month);
+  if (result.tookRecord) {
+    tell(ctx, env, me, {
+      title: `🏆 ${me} beat your all-time best`,
+      body: `${plural(score, "scoop")} (yours: ${theirBest})${result.tookLead ? ` · and leads ${mName} 👑` : ""}`,
+      tag: "game-record",
+      url: "./#game",
+    });
+  } else if (result.tookLead) {
+    tell(ctx, env, me, theirMonth
+      ? { title: `👑 ${me} took the ${mName} lead`, body: `${plural(score, "scoop")} vs your ${theirMonth}. Your move 👀`, tag: "game-lead", url: "./#game" }
+      : { title: `🏁 ${me} opened the ${mName} race`, body: `${plural(score, "scoop")}. Your move 👀`, tag: "game-lead", url: "./#game" });
+  }
+  return ok(await getState(db, me), { result });
+}
+
+// Either of you can mark a game debt as paid (Muneeb can undo it from admin).
+async function gamePaid(db, env, me, month, ctx) {
+  const row = await db
+    .prepare(`UPDATE game_months SET paid_at = ?1 WHERE month = ?2 AND winner IS NOT NULL AND paid_at IS NULL RETURNING *`)
+    .bind(Date.now(), month)
+    .first();
+  if (!row) throw new HttpError(409, { error: "nothing_owed" });
+  const loser = otherOf(row.winner);
+  tell(ctx, env, me, {
+    title: `😋 ${monthName(month)} game debt paid`,
+    body: me === loser ? `${me} says the ${plural(row.qty, "ice cream")} are paid` : `${me} marked it paid. All square 🤝`,
+    tag: "game-paid",
+    url: "./#game",
+  });
+  return ok(await getState(db, me));
+}
+
+async function adminDeleteScore(db, me, id) {
+  const row = await db.prepare(`DELETE FROM game_scores WHERE id = ? RETURNING month`).bind(id).first();
+  if (!row) throw new HttpError(404, { error: "not_found" });
+  // A finished race is re-scored with what's left (no notifications this time).
+  const settled = await db.prepare(`SELECT 1 FROM game_months WHERE month = ?`).bind(row.month).first();
+  if (settled) await settleMonth(db, row.month, Date.now());
+  return ok(await getState(db, me));
+}
+
+// Best score each that month decides it. Not playing at all counts as 0, so sitting
+// a month out loses it; equal scores (or nobody playing) mean nobody owes.
+async function settleMonth(db, month, now) {
+  const { results } = await db
+    .prepare(`SELECT who, MAX(score) AS best FROM game_scores WHERE month = ? GROUP BY who`)
+    .bind(month)
+    .all();
+  const best = { Fiza: null, Muneeb: null };
+  for (const r of results) best[r.who] = r.best;
+  const f = best.Fiza ?? 0;
+  const m = best.Muneeb ?? 0;
+  const winner = f > m ? "Fiza" : m > f ? "Muneeb" : null;
+  await db
+    .prepare(
+      `INSERT INTO game_months (month, fiza_best, muneeb_best, winner, qty, settled_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+       ON CONFLICT (month) DO UPDATE SET fiza_best = ?2, muneeb_best = ?3, winner = ?4, qty = ?5`
+    )
+    .bind(month, best.Fiza, best.Muneeb, winner, winner ? GAME_STAKE : 0, now)
+    .run();
+  return { month, best, winner };
+}
+
+async function gameCron(env, now) {
+  const db = env.DB;
+  const current = pkMonth(now);
+
+  // Settle every finished race month that hasn't been settled yet (normally just last month).
+  const last = await db.prepare(`SELECT MAX(month) AS m FROM game_months`).first();
+  for (let month = last?.m ? nextMonth(last.m) : GAME_FIRST_RACE; month < current; month = nextMonth(month)) {
+    const { best, winner } = await settleMonth(db, month, now);
+    const name = monthName(month);
+    if (!winner && best.Fiza === null) continue; // nobody played: nothing to say
+    if (!winner) {
+      const msg = { title: `🤝 The ${name} race was a tie`, body: `${best.Fiza} each. Nobody owes anything. Rematch in ${monthName(current)}!`, tag: "game-month", url: "./#game" };
+      await Promise.all(PLAYERS.map((p) => notify(env, p, msg)));
+      continue;
+    }
+    const loser = otherOf(winner);
+    const score = (who) => (best[who] === null ? "didn't play 🙈" : best[who]);
+    await Promise.all([
+      notify(env, winner, { title: `🏆 You won the ${name} race!`, body: `${best[winner]} vs ${score(loser)}. ${loser} owes you ${plural(GAME_STAKE, "ice cream")} 🍦`, tag: "game-month", url: "./#game" }),
+      notify(env, loser, { title: `🍦 ${name} goes to ${winner}`, body: `${best[winner]} vs your ${score(loser)}. You owe ${plural(GAME_STAKE, "ice cream")} 🙈`, tag: "game-month", url: "./#game" }),
+    ]);
+  }
+
+  // Last day of a race month, after noon in Karachi: one reminder each.
+  const isLastDay = pkMonth(now + DAY_MS) !== current;
+  if (current >= GAME_FIRST_RACE && isLastDay && pk(now).getUTCHours() >= 12) {
+    const claimed = await db
+      .prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING RETURNING value`)
+      .bind(`game_lastday_${current}`, String(now))
+      .first();
+    if (claimed) {
+      const { results } = await db
+        .prepare(`SELECT who, MAX(score) AS best FROM game_scores WHERE month = ? GROUP BY who`)
+        .bind(current)
+        .all();
+      const best = Object.fromEntries(results.map((r) => [r.who, r.best]));
+      const msg = {
+        title: `⏳ Last day of the ${monthName(current)} race!`,
+        body: `Fiza ${best.Fiza ?? 0} · Muneeb ${best.Muneeb ?? 0}. Loser owes ${plural(GAME_STAKE, "ice cream")} 🍦`,
+        tag: "game-lastday",
+        url: "./#game",
+      };
+      await Promise.all(PLAYERS.map((p) => notify(env, p, msg)));
+    }
+  }
+}
+
+// Current streak (days in a row up to today, or up to yesterday if not played yet
+// today) and the longest ever, from a player's distinct Karachi play days.
+function streaks(days, today) {
+  const toMs = (d) => Date.parse(d + "T00:00:00Z");
+  const sorted = [...days].sort();
+  let best = 0;
+  let run = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    run = i && toMs(sorted[i]) - toMs(sorted[i - 1]) === DAY_MS ? run + 1 : 1;
+    best = Math.max(best, run);
+  }
+  const lastDay = sorted[sorted.length - 1];
+  const gap = lastDay ? (toMs(today) - toMs(lastDay)) / DAY_MS : Infinity;
+  return { current: gap <= 1 ? run : 0, best, playedToday: gap === 0 };
+}
+
+function gameState(now, me, totals, days, months, rounds) {
+  const today = pkDay(now);
+  const month = pkMonth(now);
+  const d = pk(now);
+  const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  const players = {};
+  for (const p of PLAYERS) {
+    const t = totals.find((r) => r.who === p) || {};
+    const s = streaks(days.filter((r) => r.who === p).map((r) => r.day), today);
+    players[p] = { best: t.best ?? null, monthBest: t.month_best ?? null, rounds: t.rounds ?? 0, streak: s.current, bestStreak: s.best, playedToday: s.playedToday };
+  }
+  return {
+    month,
+    firstRace: GAME_FIRST_RACE,
+    stake: GAME_STAKE,
+    daysLeft: daysInMonth - d.getUTCDate() + 1, // including today
+    players,
+    months: months.map((r) => ({
+      month: r.month,
+      best: { Fiza: r.fiza_best, Muneeb: r.muneeb_best },
+      winner: r.winner,
+      qty: r.qty,
+      paidAt: r.paid_at,
+    })),
+    ...(me === "Muneeb" ? { rounds: rounds.map((r) => ({ id: r.id, who: r.who, score: r.score, createdAt: r.created_at })) } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // State
 
 async function getState(db, me) {
-  const [events, shops, letters, reset, opens, posts, reactions, comments] = await db.batch([
+  const month = pkMonth(Date.now());
+  const [events, shops, letters, reset, opens, posts, reactions, comments,
+    gameTotals, gameDays, gameMonths, gameRounds] = await db.batch([
     db.prepare(`SELECT * FROM events ORDER BY created_at DESC, id DESC`),
     db.prepare(`SELECT * FROM shops ORDER BY created_at ASC, id ASC`),
     db.prepare(`SELECT * FROM milestones ORDER BY at ASC`),
@@ -723,6 +978,15 @@ async function getState(db, me) {
     ),
     db.prepare(`SELECT post_id, who, emoji FROM post_reactions ORDER BY created_at`),
     db.prepare(`SELECT id, post_id, by, text, created_at FROM post_comments ORDER BY created_at, id`),
+    db.prepare(
+      `SELECT who, MAX(score) AS best, MAX(CASE WHEN month = ?1 THEN score END) AS month_best, COUNT(*) AS rounds
+       FROM game_scores GROUP BY who`
+    ).bind(month),
+    db.prepare(`SELECT DISTINCT who, day FROM game_scores`),
+    db.prepare(`SELECT * FROM game_months ORDER BY month DESC`),
+    // Recent rounds for the admin page (Muneeb only).
+    db.prepare(`SELECT id, who, score, created_at FROM game_scores WHERE ?1 = 'Muneeb' ORDER BY created_at DESC, id DESC LIMIT 40`)
+      .bind(me),
   ]);
   const cooldownResetAt = reset.results[0]?.t ?? 0;
 
@@ -758,6 +1022,7 @@ async function getState(db, me) {
         .filter((c) => c.post_id === r.id)
         .map((c) => ({ id: c.id, by: c.by, text: c.text, createdAt: c.created_at })),
     })),
+    game: gameState(now, me, gameTotals.results, gameDays.results, gameMonths.results, gameRounds.results),
     ...(me === "Muneeb" ? { opens: opens.results } : {}),
   };
 }
