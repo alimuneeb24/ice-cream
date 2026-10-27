@@ -729,7 +729,8 @@ const GAME_FIRST_RACE = "2026-11"; // October 2026 is a practice month
 const GAME_STAKE = 2;
 const GAME_MAX_SCORE = 999;
 const GAME_MIN_MS_PER_SCOOP = 250; // each drop takes ~350 ms in the game, so faster is fake
-const GAME_PLAY_NOTIFY_GAP_MS = 30 * 60 * 1000; // "X is playing" at most every 30 min per player
+// "X is playing": Muneeb hears about every round Fiza starts; Fiza hears at most every 10 min.
+const GAME_PLAY_NOTIFY_GAP_MS = 10 * 60 * 1000;
 const PLAYERS = ["Fiza", "Muneeb"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
@@ -751,22 +752,25 @@ const PLAY_LINES = ["Better guard your score 👀", "Practising for the race, pr
 
 async function gameStart(db, env, me, ctx) {
   const now = Date.now();
+  const line = PLAY_LINES[Math.floor(Math.random() * PLAY_LINES.length)];
+  if (me === "Fiza") {
+    // Every round, numbered for the day (same tag, so each one replaces the last in his tray).
+    const { n } = await db
+      .prepare(`SELECT COUNT(*) AS n FROM game_scores WHERE who = 'Fiza' AND day = ?`)
+      .bind(pkDay(now))
+      .first();
+    tell(ctx, env, me, { title: "🎮 Fiza is playing Scoop Stack", body: `Round ${n + 1} today · ${line}`, tag: "game-play", url: "./#game" });
+    return { body: { ok: true } };
+  }
   const claimed = await db
     .prepare(
       `INSERT INTO settings (key, value) VALUES (?1, ?2)
        ON CONFLICT (key) DO UPDATE SET value = ?2 WHERE CAST(value AS INTEGER) < ?3
        RETURNING value`
     )
-    .bind(`game_play_notified_${me.toLowerCase()}`, String(now), now - GAME_PLAY_NOTIFY_GAP_MS)
+    .bind("game_play_notified_muneeb", String(now), now - GAME_PLAY_NOTIFY_GAP_MS)
     .first();
-  if (claimed) {
-    tell(ctx, env, me, {
-      title: `🎮 ${me} is playing Scoop Stack`,
-      body: PLAY_LINES[Math.floor(Math.random() * PLAY_LINES.length)],
-      tag: "game-play",
-      url: "./#game",
-    });
-  }
+  if (claimed) tell(ctx, env, me, { title: "🎮 Muneeb is playing Scoop Stack", body: line, tag: "game-play", url: "./#game" });
   return { body: { ok: true } };
 }
 
