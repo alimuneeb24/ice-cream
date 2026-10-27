@@ -729,8 +729,8 @@ const GAME_FIRST_RACE = "2026-11"; // October 2026 is a practice month
 const GAME_STAKE = 2;
 const GAME_MAX_SCORE = 999;
 const GAME_MIN_MS_PER_SCOOP = 250; // each drop takes ~350 ms in the game, so faster is fake
-// "X is playing": Muneeb hears about every round Fiza starts; Fiza hears at most every 10 min.
-const GAME_PLAY_NOTIFY_GAP_MS = 10 * 60 * 1000;
+// "X is playing" at most this often: Muneeb hears about Fiza every 5 min, Fiza about him every 10.
+const GAME_PLAY_NOTIFY_GAP_MS = { Fiza: 5 * 60 * 1000, Muneeb: 10 * 60 * 1000 };
 const PLAYERS = ["Fiza", "Muneeb"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
@@ -752,30 +752,31 @@ const PLAY_LINES = ["Better guard your score 👀", "Practising for the race, pr
 
 async function gameStart(db, env, me, ctx) {
   const now = Date.now();
-  const line = PLAY_LINES[Math.floor(Math.random() * PLAY_LINES.length)];
-  if (me === "Fiza") {
-    // Every round, numbered for the day (same tag, so each one replaces the last in his tray).
-    const { n } = await db
-      .prepare(`SELECT COUNT(*) AS n FROM game_scores WHERE who = 'Fiza' AND day = ?`)
-      .bind(pkDay(now))
-      .first();
-    tell(ctx, env, me, { title: "🎮 Fiza is playing Scoop Stack", body: `Round ${n + 1} today · ${line}`, tag: "game-play", url: "./#game" });
-    return { body: { ok: true } };
-  }
   const claimed = await db
     .prepare(
       `INSERT INTO settings (key, value) VALUES (?1, ?2)
        ON CONFLICT (key) DO UPDATE SET value = ?2 WHERE CAST(value AS INTEGER) < ?3
        RETURNING value`
     )
-    .bind("game_play_notified_muneeb", String(now), now - GAME_PLAY_NOTIFY_GAP_MS)
+    .bind(`game_play_notified_${me.toLowerCase()}`, String(now), now - GAME_PLAY_NOTIFY_GAP_MS[me])
     .first();
-  if (claimed) tell(ctx, env, me, { title: "🎮 Muneeb is playing Scoop Stack", body: line, tag: "game-play", url: "./#game" });
+  if (!claimed) return { body: { ok: true } };
+  let body = PLAY_LINES[Math.floor(Math.random() * PLAY_LINES.length)];
+  if (me === "Fiza") {
+    // Muneeb also gets how her day is going (rounds that ended at 0 aren't saved, so they don't count).
+    const today = await db
+      .prepare(`SELECT COUNT(*) AS n, MAX(score) AS best FROM game_scores WHERE who = 'Fiza' AND day = ?`)
+      .bind(pkDay(now))
+      .first();
+    if (today.n) body = `${plural(today.n, "round")} today, best ${today.best} · ${body}`;
+  }
+  tell(ctx, env, me, { title: `🎮 ${me} is playing Scoop Stack`, body, tag: "game-play", url: "./#game" });
   return { body: { ok: true } };
 }
 
-// { score, ms }: one finished round. Notifies the other person only on the rare,
-// exciting ones: taking the month's lead, or taking the all-time record off them.
+// { score, ms }: one finished round. Notifies the other person only on the exciting
+// ones: taking the all-time record off them, Fiza beating her own best (Muneeb
+// always hears about that), or taking the month's lead.
 async function gameScore(db, env, me, body, ctx) {
   const { score, ms } = body;
   if (!Number.isInteger(score) || score < 1 || score > GAME_MAX_SCORE) badRequest(`score must be 1-${GAME_MAX_SCORE}`);
@@ -812,6 +813,13 @@ async function gameScore(db, env, me, body, ctx) {
     tell(ctx, env, me, {
       title: `🏆 ${me} beat your all-time best`,
       body: `${plural(score, "scoop")} (yours: ${theirBest})${result.tookLead ? ` · and leads ${mName} 👑` : ""}`,
+      tag: "game-record",
+      url: "./#game",
+    });
+  } else if (me === "Fiza" && result.personalBest && myBest > 0) {
+    tell(ctx, env, me, {
+      title: "🎉 Fiza beat her own best",
+      body: `${plural(score, "scoop")} (her old best: ${myBest}${theirBest ? ` · yours: ${theirBest}` : ""})${result.tookLead ? ` · and leads ${mName} 👑` : ""}`,
       tag: "game-record",
       url: "./#game",
     });
