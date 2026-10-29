@@ -506,6 +506,21 @@ h1, h2 { margin: 0; font-weight: 700; letter-spacing: 0.2px; }
 @keyframes sheet-up { from { transform: translate(-50%, 100%); } to { transform: translate(-50%, 0); } }
 @keyframes fade { from { opacity: 0; } }
 
+/* "Are you sure?" before a delete. Above the photo viewer, below the lock screen. */
+.confirm {
+  position: fixed; inset: 0; z-index: 48; display: grid; place-items: center; padding: 16px;
+  background: rgba(90, 58, 46, 0.35); animation: fade 0.2s ease-out;
+}
+.confirm-card {
+  width: min(340px, 100%); padding: 20px 18px 18px; text-align: center;
+  background: var(--cream); border: var(--outline); border-radius: 24px;
+  animation: pop-in 0.3s cubic-bezier(.3, 1.5, .5, 1);
+}
+.confirm-card h3 { margin: 0 0 6px; font-size: 21px; }
+.confirm-card p { margin: 0; color: var(--ink-soft); overflow-wrap: anywhere; }
+.confirm-card .sheet-actions { justify-content: center; }
+.btn-danger { background: var(--strawberry-deep); }
+
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { padding: 7px 12px; font-size: 15px; box-shadow: 0 3px 0 var(--ink); border-width: 2.5px; }
 .chip[aria-pressed='true'] { background: var(--strawberry); }
@@ -720,6 +735,8 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
 .admin-list li:last-child { border-bottom: 0; }
 .admin-list .link-btn { padding: 4px; white-space: nowrap; }
 .admin-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.bin-thumb { width: 48px; height: 48px; flex: none; object-fit: cover; border: 2px solid var(--ink); border-radius: 8px; background: #fff; }
+.bin-what { flex: 1; min-width: 0; }
 @media (min-width: 720px) {
   .admin-grid { grid-template-columns: 1fr 1fr; align-items: start; }
   .admin-wide { grid-row: span 3; }

@@ -138,3 +138,32 @@ CREATE TABLE IF NOT EXISTS game_months (
   paid_at     INTEGER,
   settled_at  INTEGER NOT NULL
 );
+
+-- Deleted polaroids, comments and shops land here instead of vanishing. `data` is a
+-- JSON snapshot of every row the delete removed (a polaroid brings its comments,
+-- reactions and pay-off along); the photo itself stays in R2. Only Muneeb can restore.
+CREATE TABLE IF NOT EXISTS bin (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind        TEXT    NOT NULL,         -- 'post', 'comment' or 'shop'
+  item_id     INTEGER NOT NULL,
+  data        TEXT    NOT NULL,
+  deleted_by  TEXT    NOT NULL,
+  deleted_at  INTEGER NOT NULL,
+  restored_at INTEGER
+);
+
+-- Every change either of them makes (and every wrong PIN). Never shown on the site;
+-- read it with `npm run logs`. PINs and push keys are never stored.
+CREATE TABLE IF NOT EXISTS activity_log (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  at      INTEGER NOT NULL,
+  who     TEXT,                         -- NULL for a wrong PIN
+  action  TEXT    NOT NULL,             -- e.g. 'uploaded polaroid #12'
+  method  TEXT    NOT NULL,
+  path    TEXT    NOT NULL,
+  status  INTEGER NOT NULL,
+  detail  TEXT,                         -- JSON: what was sent and what came back
+  country TEXT,
+  ip      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_at ON activity_log (at);

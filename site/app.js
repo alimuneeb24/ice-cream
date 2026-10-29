@@ -175,6 +175,36 @@
   $('sheetBackdrop').addEventListener('click', () => closeSheet());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
 
+  // ---------- "are you sure?" before anything gets deleted (sits above the photo viewer) ----------
+  function askSure({ title, sub, yes = 'Yes, delete', no = 'Keep it' }) {
+    const el = $('confirm');
+    el.innerHTML = `<div class="confirm-card">
+        <h3>${esc(title)}</h3>
+        ${sub ? `<p>${esc(sub)}</p>` : ''}
+        <div class="sheet-actions">
+          <button class="btn btn-plain" data-sure="no">${esc(no)}</button>
+          <button class="btn btn-danger" data-sure="yes">${esc(yes)}</button>
+        </div>
+      </div>`;
+    el.hidden = false;
+    el.querySelector('[data-sure="no"]').focus();
+    return new Promise((resolve) => {
+      const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } };
+      const done = (yes) => {
+        el.hidden = true;
+        el.onclick = null;
+        window.removeEventListener('keydown', key, true);
+        resolve(yes);
+      };
+      window.addEventListener('keydown', key, true); // Escape closes only this, not the viewer under it
+      el.onclick = (e) => {
+        const b = e.target.closest('[data-sure]');
+        if (b) done(b.dataset.sure === 'yes');
+        else if (e.target === el) done(false);
+      };
+    });
+  }
+
   // ---------- lock screen ----------
   let entered = '';
   let wrongCount = 0;
@@ -999,6 +1029,8 @@
 
       ${adminGameCard()}
 
+      ${adminBinCard()}
+
       <section class="admin-card admin-wide">
         <h2>📜 Rings & ice creams</h2>
         <p class="muted small">Delete anything that shouldn't be there, e.g. an accidental ring. Tap Delete twice to confirm.</p>
@@ -1033,6 +1065,41 @@
         </div>
       </section>`;
     updateAdminBell();
+    loadBinThumbs();
+  }
+
+  // Deleted polaroids, comments and spots. Only Muneeb sees the bin or can restore from it.
+  function adminBinCard() {
+    const bin = state.bin || [];
+    const what = (b) => (b.kind === 'post'
+      ? `📸 <b>Polaroid #${b.itemId}</b> by ${esc(b.by)}${b.note ? ` · “${esc(b.note)}”` : b.flavour ? ` · ${esc(b.flavour)}` : ''}${b.comments ? ` · ${plural(b.comments, 'comment')}` : ''}`
+      : b.kind === 'comment'
+        ? `💬 <b>Comment</b> by ${esc(b.by)} on #${b.postId} · “${esc(b.text)}”`
+        : `📍 <b>Spot</b> · ${esc(b.name)}`);
+    return `<section class="admin-card">
+        <h2>🗑️ Bin</h2>
+        <ul class="admin-list">
+          ${bin.map((b) => `<li>
+            ${b.kind === 'post' ? `<img class="bin-thumb" data-bin-thumb="${b.id}" alt="">` : ''}
+            <span class="bin-what">${what(b)}<br><span class="muted">deleted by ${esc(b.deletedBy)} · ${fmtDate(b.deletedAt)}</span></span>
+            <button class="link-btn" data-restore="${b.id}">Restore</button>
+          </li>`).join('') || '<li class="muted">Empty. Nothing has been deleted.</li>'}
+        </ul>
+        <p class="muted small">Deleted polaroids, comments and spots wait here. Only you can see the bin or bring things back.</p>
+      </section>`;
+  }
+
+  const binThumbs = new Map(); // bin id → Promise of an object URL
+  function loadBinThumbs() {
+    document.querySelectorAll('[data-bin-thumb]').forEach(async (img) => {
+      const id = img.dataset.binThumb;
+      if (!binThumbs.has(id)) {
+        binThumbs.set(id, fetch(`${C.API_URL}/admin/bin/${id}/photo?size=thumb`, { headers: { 'X-Pin': pin || '' } })
+          .then((res) => (res.ok ? res.blob() : Promise.reject(new Error('photo_' + res.status))))
+          .then((blob) => URL.createObjectURL(blob)));
+      }
+      try { img.src = await binThumbs.get(id); } catch { img.remove(); }
+    });
   }
 
   function adminGameCard() {
@@ -1076,7 +1143,9 @@
       renderAll();
       toast(done);
     } catch (err) {
-      if (err.status === 409 && err.data.error === 'would_go_negative') {
+      if (err.status === 409 && err.data.error === 'post_in_bin') {
+        toast('Restore its polaroid first 📸', { sub: 'This comment belongs to a polaroid that is in the bin too' });
+      } else if (err.status === 409 && err.data.error === 'would_go_negative') {
         toast("Can't do that 🙈", { sub: 'Eaten would end up higher than owed' });
       } else if (err.status === 400) {
         toast('Hmm, that number looks off', { sub: err.data.message });
@@ -1111,6 +1180,7 @@
       if (!confirmTap(t, 'Sure? Tap again')) return;
       return adminCall(`/admin/game/scores/${t.dataset.delScore}`, 'DELETE', null, 'Score deleted 🗑️');
     }
+    if (t.dataset.restore) return adminCall(`/admin/bin/${t.dataset.restore}/restore`, 'POST', {}, 'Restored ↩️');
     if (t.dataset.unpay) return adminCall(`/admin/game/months/${t.dataset.unpay}/unpaid`, 'POST', {}, 'Marked unpaid');
   });
 
@@ -1581,7 +1651,8 @@
       if (react) return setReaction(id, react.dataset.react);
       const delC = e.target.closest('[data-del-comment]');
       if (delC) {
-        if (delC.dataset.sure !== '1') { delC.dataset.sure = '1'; delC.textContent = 'delete?'; return; }
+        const c = ((state.posts || []).find((x) => x.id === id)?.comments || []).find((x) => x.id === +delC.dataset.delComment);
+        if (!(await askSure({ title: 'Delete this comment? 🗑️', sub: c ? `“${c.text.length > 80 ? c.text.slice(0, 80) + '…' : c.text}”` : '' }))) return;
         try {
           const res = await api(`/posts/${id}/comments/${delC.dataset.delComment}`, 'DELETE');
           setState(res.state);
@@ -1593,12 +1664,13 @@
       if (act === 'close' || e.target === $('photoView')) return closePhoto();
       if (act === 'save') return savePhoto(id);
       if (act === 'delete') {
-        const b = e.target.closest('[data-pv]');
-        if (b.dataset.sure !== '1') {
-          b.dataset.sure = '1';
-          b.textContent = p.paidQty ? 'Sure? This also undoes the pay-off' : 'Sure? Tap again';
-          return;
-        }
+        const sure = await askSure({
+          title: 'Delete this polaroid? 🗑️',
+          sub: p.paidQty
+            ? `It disappears from the scrapbook, and the ${plural(p.paidQty, 'ice cream')} it paid off go back on the count.`
+            : 'It disappears from the scrapbook.',
+        });
+        if (!sure) return;
         try {
           const res = await api(`/posts/${id}`, 'DELETE');
           setState(res.state);
@@ -2333,7 +2405,7 @@
         root.querySelector('[data-act="cancel"]').onclick = () => closeSheet();
         const del = root.querySelector('[data-act="del"]');
         if (del) del.onclick = async () => {
-          if (del.dataset.sure !== '1') { del.dataset.sure = '1'; del.textContent = 'Sure? Tap again'; return; }
+          if (!(await askSure({ title: `Remove ${s.name}? 🗑️`, sub: 'It disappears from the map.', yes: 'Yes, remove' }))) return;
           try {
             const res = await api(`/shops/${s.id}`, 'DELETE');
             setState(res.state);

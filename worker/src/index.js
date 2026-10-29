@@ -50,8 +50,10 @@ export default {
       if (attempt?.locked_until > now) return lockedOut(attempt.locked_until, now, cors);
 
       const me = await whoIs(pin, env, pinHashes);
+      const entry = logEntry(request);
       if (!me) {
         if (!pin) return json({ error: "bad_pin" }, 401, cors);
+        ctx.waitUntil(writeLog(db, entry, null, 401, null, "wrong PIN"));
         const fails = (attempt && !attempt.locked_until ? attempt.fails : 0) + 1;
         const lockedUntil = fails >= MAX_PIN_TRIES ? now + LOCKOUT_MS : null;
         await db
@@ -66,7 +68,17 @@ export default {
       }
       if (attempt) await db.prepare(`DELETE FROM pin_attempts WHERE ip = ?`).bind(ip).run();
 
-      const result = await route(request, env, me, ctx);
+      let result;
+      try {
+        result = await route(request, env, me, ctx);
+      } catch (err) {
+        const status = err instanceof HttpError ? err.status : 500;
+        if (entry.log) ctx.waitUntil(writeLog(db, entry, me, status, err.body ?? { error: String(err) }));
+        throw err;
+      }
+      if (entry.log && !(result instanceof Response)) {
+        ctx.waitUntil(writeLog(db, entry, me, result.status ?? 200, result.body));
+      }
       if (result instanceof Response) {
         // Raw responses (photos) still need the CORS headers.
         for (const [k, v] of Object.entries(cors)) result.headers.set(k, v);
@@ -204,6 +216,10 @@ async function route(request, env, me, ctx) {
   if (method === "POST" && (m = path.match(/^\/admin\/game\/months\/(\d{4}-\d{2})\/unpaid$/))) {
     await db.prepare(`UPDATE game_months SET paid_at = NULL WHERE month = ?`).bind(m[1]).run();
     return ok(await getState(db, me));
+  }
+  if (method === "POST" && (m = path.match(/^\/admin\/bin\/(\d+)\/restore$/))) return adminRestore(db, me, Number(m[1]));
+  if (method === "GET" && (m = path.match(/^\/admin\/bin\/(\d+)\/photo$/))) {
+    return adminBinPhoto(db, env, Number(m[1]), new URL(request.url).searchParams.get("size"));
   }
 
   throw new HttpError(404, { error: "not_found" });
@@ -359,13 +375,21 @@ async function getPhoto(db, env, id, size) {
 }
 
 // The poster can delete their own polaroid; Muneeb can delete any. A polaroid that
-// counted toward the debt takes its pay-off with it.
+// counted toward the debt takes its pay-off with it. It all goes to the bin, and the
+// photo stays in R2, so Muneeb can bring it back.
 async function deletePost(db, env, me, id) {
   const row = await db.prepare(`SELECT * FROM posts WHERE id = ?`).bind(id).first();
   if (!row) throw new HttpError(404, { error: "not_found" });
   if (row.by !== me && me !== "Muneeb") throw new HttpError(403, { error: "not_yours" });
-  await env.PHOTOS.delete([photoKey(id, "full"), photoKey(id, "thumb")]);
+  const [reactions, comments, paidEvent] = await db.batch([
+    db.prepare(`SELECT * FROM post_reactions WHERE post_id = ?`).bind(id),
+    db.prepare(`SELECT * FROM post_comments WHERE post_id = ?`).bind(id),
+    db.prepare(`SELECT * FROM events WHERE id = ?`).bind(row.paid_event_id),
+  ]);
   const steps = [
+    toBin(db, me, "post", id, {
+      post: row, reactions: reactions.results, comments: comments.results, paidEvent: paidEvent.results[0] ?? null,
+    }),
     db.prepare(`DELETE FROM posts WHERE id = ?`).bind(id),
     db.prepare(`DELETE FROM post_reactions WHERE post_id = ?`).bind(id),
     db.prepare(`DELETE FROM post_comments WHERE post_id = ?`).bind(id),
@@ -426,10 +450,13 @@ async function commentOnPost(db, me, id, body) {
 
 // Your own comments; Muneeb can delete any.
 async function deleteComment(db, me, postId, id) {
-  const row = await db.prepare(`SELECT by FROM post_comments WHERE id = ? AND post_id = ?`).bind(id, postId).first();
+  const row = await db.prepare(`SELECT * FROM post_comments WHERE id = ? AND post_id = ?`).bind(id, postId).first();
   if (!row) throw new HttpError(404, { error: "not_found" });
   if (row.by !== me && me !== "Muneeb") throw new HttpError(403, { error: "not_yours" });
-  await db.prepare(`DELETE FROM post_comments WHERE id = ?`).bind(id).run();
+  await db.batch([
+    toBin(db, me, "comment", id, { comment: row }),
+    db.prepare(`DELETE FROM post_comments WHERE id = ?`).bind(id),
+  ]);
   return ok(await getState(db, me));
 }
 
@@ -541,12 +568,17 @@ async function updateShop(db, me, id, body) {
 }
 
 async function deleteShop(db, me, id) {
-  // Detach paid events from the shop, then delete it (one transaction).
-  const [, del] = await db.batch([
+  const [shop, linked] = await db.batch([
+    db.prepare(`SELECT * FROM shops WHERE id = ?`).bind(id),
+    db.prepare(`SELECT id FROM events WHERE shop_id = ?`).bind(id),
+  ]);
+  if (!shop.results.length) throw new HttpError(404, { error: "not_found" });
+  // Bin it, detach paid events from the shop, then delete it (one transaction).
+  await db.batch([
+    toBin(db, me, "shop", id, { shop: shop.results[0], eventIds: linked.results.map((e) => e.id) }),
     db.prepare(`UPDATE events SET shop_id = NULL WHERE shop_id = ?`).bind(id),
     db.prepare(`DELETE FROM shops WHERE id = ?`).bind(id),
   ]);
-  if (!del.meta.changes) throw new HttpError(404, { error: "not_found" });
   return ok(await getState(db, me));
 }
 
@@ -679,6 +711,80 @@ async function adminDeleteEvent(db, me, id) {
     .run();
   if (!del.meta.changes) throw new HttpError(409, { error: "would_go_negative" });
   return ok(await getState(db, me), { event: toEvent(row) });
+}
+
+// ---- Bin: deleted polaroids, comments and shops wait here until Muneeb restores them ----
+
+function toBin(db, me, kind, itemId, data) {
+  return db
+    .prepare(`INSERT INTO bin (kind, item_id, data, deleted_by, deleted_at) VALUES (?, ?, ?, ?, ?)`)
+    .bind(kind, itemId, JSON.stringify(data), me, Date.now());
+}
+
+// Puts a snapshot row back exactly as it was (same id). The column names come from
+// our own SELECT *, never from a request.
+function insertRow(db, table, row) {
+  const cols = Object.keys(row);
+  return db
+    .prepare(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
+    .bind(...cols.map((c) => row[c]));
+}
+
+async function adminRestore(db, me, binId) {
+  const item = await db.prepare(`SELECT * FROM bin WHERE id = ? AND restored_at IS NULL`).bind(binId).first();
+  if (!item) throw new HttpError(404, { error: "not_found" });
+  const d = JSON.parse(item.data);
+  const steps = [];
+  if (item.kind === "post") {
+    const post = { ...d.post };
+    if (d.paidEvent) {
+      // Its pay-off comes back too, but never more than is still owed.
+      const { pending } = await db
+        .prepare(`SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) AS pending FROM events`)
+        .first();
+      const qty = Math.min(d.paidEvent.qty, pending);
+      if (qty > 0) steps.push(insertRow(db, "events", { ...d.paidEvent, qty }));
+      else post.paid_event_id = null;
+    }
+    steps.push(insertRow(db, "posts", post));
+    for (const r of d.reactions) steps.push(insertRow(db, "post_reactions", r));
+    for (const c of d.comments) steps.push(insertRow(db, "post_comments", c));
+  } else if (item.kind === "comment") {
+    const post = await db.prepare(`SELECT id FROM posts WHERE id = ?`).bind(d.comment.post_id).first();
+    if (!post) throw new HttpError(409, { error: "post_in_bin" });
+    steps.push(insertRow(db, "post_comments", d.comment));
+  } else {
+    steps.push(insertRow(db, "shops", d.shop));
+    for (const eventId of d.eventIds) {
+      steps.push(db.prepare(`UPDATE events SET shop_id = ? WHERE id = ? AND shop_id IS NULL`).bind(d.shop.id, eventId));
+    }
+  }
+  steps.push(db.prepare(`UPDATE bin SET restored_at = ? WHERE id = ?`).bind(Date.now(), binId));
+  await db.batch(steps);
+  return ok(await getState(db, me), { restored: `${item.kind} #${item.item_id}` });
+}
+
+// A binned polaroid's photo, so Muneeb can see what he's restoring.
+async function adminBinPhoto(db, env, binId, size) {
+  const item = await db.prepare(`SELECT item_id FROM bin WHERE id = ? AND kind = 'post'`).bind(binId).first();
+  const obj = item && (await env.PHOTOS.get(photoKey(item.item_id, size)));
+  if (!obj) throw new HttpError(404, { error: "not_found" });
+  return new Response(obj.body, {
+    headers: { "Content-Type": obj.httpMetadata?.contentType || "image/jpeg", "Cache-Control": "private, no-store" },
+  });
+}
+
+function toBinItem(r) {
+  const d = JSON.parse(r.data);
+  const item = { id: r.id, kind: r.kind, itemId: r.item_id, deletedBy: r.deleted_by, deletedAt: r.deleted_at };
+  if (r.kind === "post") {
+    return { ...item, by: d.post.by, createdAt: d.post.created_at, note: d.post.note, flavour: d.post.flavour,
+      comments: d.comments.length, paidQty: d.paidEvent?.qty ?? null };
+  }
+  if (r.kind === "comment") {
+    return { ...item, by: d.comment.by, createdAt: d.comment.created_at, text: d.comment.text, postId: d.comment.post_id };
+  }
+  return { ...item, name: d.shop.name, createdAt: d.shop.created_at };
 }
 
 // Set the starting count (The Archives), never below what's already been eaten.
@@ -971,12 +1077,104 @@ function gameState(now, me, totals, days, months, rounds) {
 }
 
 // ---------------------------------------------------------------------------
+// Activity log: every change either of them makes, kept in D1 and never shown on
+// the site (read it with `npm run logs`). Reads and the "still here" pings are left out.
+
+const LOG_SKIP = [/^\/hello\/\d+$/];
+const LOG_NO_BODY = [/^\/pin\//, /^\/push\//]; // never store a PIN or a push key
+const LOG_MAX_DETAIL = 2000;
+const LOG_ACTIONS = [
+  ["POST", /^\/owe$/, () => "rang the bell (+2)"],
+  ["POST", /^\/paid$/, (m, res) => `ate ${plural(res?.event?.qty ?? 0, "ice cream")}`],
+  ["POST", /^\/undo$/, (m, res) => `undid ${res?.event ? `${res.event.type} #${res.event.id}` : "their last event"}`],
+  ["PATCH", /^\/events\/(\d+)$/, (m) => `edited the note on event #${m[1]}`],
+  ["POST", /^\/shops$/, (m, res) => `added shop #${res?.shop?.id ?? "?"}`],
+  ["PATCH", /^\/shops\/(\d+)$/, (m) => `edited shop #${m[1]}`],
+  ["DELETE", /^\/shops\/(\d+)$/, (m) => `deleted shop #${m[1]} (moved to bin)`],
+  ["POST", /^\/posts$/, (m, res) => `uploaded polaroid #${res?.post?.id ?? "?"}`],
+  ["DELETE", /^\/posts\/(\d+)$/, (m) => `deleted polaroid #${m[1]} (moved to bin)`],
+  ["PUT", /^\/posts\/(\d+)\/reaction$/, (m) => `reacted to polaroid #${m[1]}`],
+  ["POST", /^\/posts\/(\d+)\/comments$/, (m) => `commented on polaroid #${m[1]}`],
+  ["DELETE", /^\/posts\/(\d+)\/comments\/(\d+)$/, (m) => `deleted comment #${m[2]} on polaroid #${m[1]} (moved to bin)`],
+  ["PATCH", /^\/milestones\/(\d+)$/, (m) => `wrote the envelope for ${m[1]}`],
+  ["POST", /^\/milestones\/(\d+)\/open$/, (m) => `opened the envelope for ${m[1]}`],
+  ["POST", /^\/pin\/(\w+)$/, (m) => `changed the ${m[1]} PIN`],
+  ["POST", /^\/hello$/, () => "opened the site"],
+  ["POST", /^\/spin$/, () => "spun the wheel"],
+  ["POST", /^\/game\/start$/, () => "started a Scoop Stack round"],
+  ["POST", /^\/game\/score$/, () => "finished a Scoop Stack round"],
+  ["POST", /^\/game\/months\/([\d-]+)\/paid$/, (m) => `marked the ${m[1]} race paid`],
+  ["POST", /^\/push\/subscribe$/, () => "turned on notifications"],
+  ["POST", /^\/push\/unsubscribe$/, () => "turned off notifications"],
+  ["DELETE", /^\/admin\/events\/(\d+)$/, (m) => `admin: deleted event #${m[1]}`],
+  ["PATCH", /^\/admin\/archives$/, () => "admin: changed The Archives"],
+  ["POST", /^\/admin\/unfreeze$/, () => "admin: unfroze the bell"],
+  ["DELETE", /^\/admin\/opens\/(\d+)$/, (m) => `admin: removed open #${m[1]} ("that was me")`],
+  ["POST", /^\/admin\/milestones\/(\d+)\/reseal$/, (m) => `admin: re-sealed the envelope for ${m[1]}`],
+  ["DELETE", /^\/admin\/game\/scores\/(\d+)$/, (m) => `admin: deleted Scoop Stack round #${m[1]}`],
+  ["POST", /^\/admin\/game\/months\/([\d-]+)\/unpaid$/, (m) => `admin: marked the ${m[1]} race unpaid`],
+  ["POST", /^\/admin\/bin\/(\d+)\/restore$/, (m, res) => `admin: restored ${res?.restored ?? `bin item #${m[1]}`} from the bin`],
+];
+
+// Taken before the request is handled. Only small JSON bodies are copied: teeing a
+// multipart photo upload would hold the whole photo in memory twice.
+function logEntry(request) {
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  const method = request.method;
+  const log = method !== "GET" && !LOG_SKIP.some((re) => re.test(path));
+  const isJson = (request.headers.get("Content-Type") || "").includes("json");
+  const body = log && isJson && !LOG_NO_BODY.some((re) => re.test(path))
+    ? request.clone().text().catch(() => null)
+    : null;
+  return {
+    log, method, path, body,
+    country: request.cf?.country || null,
+    ip: request.headers.get("CF-Connecting-IP") || "local",
+  };
+}
+
+async function writeLog(db, entry, who, status, res, action) {
+  try {
+    const sent = entry.body ? await entry.body : null;
+    let label = action;
+    for (const [method, re, fn] of LOG_ACTIONS) {
+      const m = !label && method === entry.method && entry.path.match(re);
+      if (m) label = fn(m, res);
+    }
+    label ??= `${entry.method} ${entry.path}`;
+    if (status >= 400 && !action) label = `FAILED ${status}: ${label}`;
+    const { state, ...back } = res || {}; // the full state is too big and says nothing new
+    const detail = JSON.stringify({
+      ...(sent ? { sent: safeParse(sent) } : {}),
+      ...(Object.keys(back).length ? { back } : {}),
+    });
+    await db
+      .prepare(`INSERT INTO activity_log (at, who, action, method, path, status, detail, country, ip)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(Date.now(), who, label, entry.method, entry.path, status,
+        detail === "{}" ? null : clip(detail, LOG_MAX_DETAIL), entry.country, entry.ip)
+      .run();
+  } catch (err) {
+    console.error("activity log failed", err); // never let logging break the request
+  }
+}
+
+function safeParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // State
 
 async function getState(db, me) {
   const month = pkMonth(Date.now());
   const [events, shops, letters, reset, opens, posts, reactions, comments,
-    gameTotals, gameDays, gameMonths, gameRounds] = await db.batch([
+    gameTotals, gameDays, gameMonths, gameRounds, bin] = await db.batch([
     db.prepare(`SELECT * FROM events ORDER BY created_at DESC, id DESC`),
     db.prepare(`SELECT * FROM shops ORDER BY created_at ASC, id ASC`),
     db.prepare(`SELECT * FROM milestones ORDER BY at ASC`),
@@ -998,6 +1196,9 @@ async function getState(db, me) {
     db.prepare(`SELECT * FROM game_months ORDER BY month DESC`),
     // Recent rounds for the admin page (Muneeb only).
     db.prepare(`SELECT id, who, score, created_at FROM game_scores WHERE ?1 = 'Muneeb' ORDER BY created_at DESC, id DESC LIMIT 40`)
+      .bind(me),
+    // The bin, for the admin page (Muneeb only).
+    db.prepare(`SELECT * FROM bin WHERE ?1 = 'Muneeb' AND restored_at IS NULL ORDER BY deleted_at DESC, id DESC LIMIT 50`)
       .bind(me),
   ]);
   const cooldownResetAt = reset.results[0]?.t ?? 0;
@@ -1035,7 +1236,7 @@ async function getState(db, me) {
         .map((c) => ({ id: c.id, by: c.by, text: c.text, createdAt: c.created_at })),
     })),
     game: gameState(now, me, gameTotals.results, gameDays.results, gameMonths.results, gameRounds.results),
-    ...(me === "Muneeb" ? { opens: opens.results } : {}),
+    ...(me === "Muneeb" ? { opens: opens.results, bin: bin.results.map(toBinItem) } : {}),
   };
 }
 

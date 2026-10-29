@@ -23,3 +23,8 @@ ALLOWED_ORIGINS = "https://alimuneeb24.github.io"
 # (19:05 UTC), and send the last-day reminder at 6 pm Karachi (13:00 UTC).
 [triggers]
 crons = ["5 19 * * *", "0 13 * * *"]
+
+# Cloudflare's own request logs (errors and crashes, kept a few days). The permanent
+# who-did-what log is the activity_log table: `npm run logs`.
+[observability]
+enabled = true
