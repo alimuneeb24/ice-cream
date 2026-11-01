@@ -1118,13 +1118,13 @@
             </li>`).join('') || '<li class="muted">No rounds yet.</li>'}
           </ul>
         </details>
-        ${g.months.length ? `<h3 class="opens-h">Races</h3><ul class="admin-list">
-          ${g.months.map((m) => `<li>
-            <span><b>${esc(monthLabel(m.month))}</b> · ${m.winner ? `${esc(m.winner)} won` : 'nobody owes'}${m.winner ? ` · ${m.paidAt ? 'paid ✓' : 'not paid yet'}` : ''}</span>
-            ${m.paidAt ? `<button class="link-btn" data-unpay="${m.month}">Mark unpaid</button>` : ''}
+        ${g.weeks.length ? `<h3 class="opens-h">Races</h3><ul class="admin-list">
+          ${g.weeks.map((w) => `<li>
+            <span><b>${esc(weekLabel(w.week))}</b> · ${w.winner ? `${esc(w.winner)} won` : 'nobody owes'}${w.winner ? ` · ${w.paidAt ? 'paid ✓' : 'not paid yet'}` : ''}</span>
+            ${w.paidAt ? `<button class="link-btn" data-unpay="${w.week}">Mark unpaid</button>` : ''}
           </li>`).join('')}
         </ul>` : ''}
-        <p class="muted small">Delete a fake or accidental score. Deleting one from a finished month re-scores that race.</p>
+        <p class="muted small">Delete a fake or accidental score. Deleting one from a finished week re-scores that race.</p>
       </section>`;
   }
 
@@ -1181,7 +1181,7 @@
       return adminCall(`/admin/game/scores/${t.dataset.delScore}`, 'DELETE', null, 'Score deleted 🗑️');
     }
     if (t.dataset.restore) return adminCall(`/admin/bin/${t.dataset.restore}/restore`, 'POST', {}, 'Restored ↩️');
-    if (t.dataset.unpay) return adminCall(`/admin/game/months/${t.dataset.unpay}/unpaid`, 'POST', {}, 'Marked unpaid');
+    if (t.dataset.unpay) return adminCall(`/admin/game/weeks/${t.dataset.unpay}/unpaid`, 'POST', {}, 'Marked unpaid');
   });
 
   // who: 'fiza' (reset hers) or 'muneeb' (change his own, typed twice).
@@ -1783,36 +1783,47 @@
   }
 
   // ---------- 🎮 Scoop Stack: card ----------
-  const monthLabel = (m, month = 'long') => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('en-GB', { month, timeZone: 'UTC' });
+  // A race week by its Monday: "2–8 Nov", or "30 Nov – 6 Dec" across a month end.
+  function weekLabel(week) {
+    const a = new Date(`${week}T12:00:00Z`);
+    const b = new Date(a.getTime() + 6 * 86400000);
+    const mon = (d) => d.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
+    return a.getUTCMonth() === b.getUTCMonth()
+      ? `${a.getUTCDate()}–${b.getUTCDate()} ${mon(b)}`
+      : `${a.getUTCDate()} ${mon(a)} – ${b.getUTCDate()} ${mon(b)}`;
+  }
+  // "Fiza 2 – 1 Muneeb": weeks won so far.
+  const weeksWon = (g) => `${esc(C.HER)} <b>${g.wins[C.HER]}</b> – <b>${g.wins[C.HIM]}</b> ${esc(C.HIM)}`;
   const otherPlayer = () => (state.me === C.HIM ? C.HER : C.HIM);
 
   function renderGame() {
     const g = state.game;
     if (!g) return;
-    const racing = g.month >= g.firstRace;
-    const mb = (p) => g.players[p].monthBest || 0;
-    const leader = mb(C.HER) > mb(C.HIM) ? C.HER : mb(C.HIM) > mb(C.HER) ? C.HIM : null;
+    const racing = g.week >= g.firstRace;
+    const wb = (p) => g.players[p].weekBest || 0;
+    const leader = wb(C.HER) > wb(C.HIM) ? C.HER : wb(C.HIM) > wb(C.HER) ? C.HIM : null;
     $('gameSub').innerHTML = racing
-      ? `${esc(monthLabel(g.month))} race · ${g.daysLeft === 1 ? '<b>last day!</b> ⏳' : `${g.daysLeft} days left`} · loser owes ${g.stake} 🍦`
-      : `Practice month · races start 1 ${esc(monthLabel(g.firstRace, 'short'))}`;
+      ? `This week's race (${esc(weekLabel(g.week))}) · ${g.daysLeft === 1 ? '<b>last day!</b> ⏳' : `${g.daysLeft} days left`} · loser owes ${g.stake} 🍦`
+      : 'Practice week · weekly races start Monday';
     $('gameBoard').innerHTML = [C.HER, C.HIM].map((p) => {
       const s = g.players[p];
       const sub = [s.best ? `best ever ${s.best}` : 'no rounds yet', s.streak ? `🔥 ${plural(s.streak, 'day')}` : ''].filter(Boolean).join(' · ');
       return `<li class="gp${p === leader ? ' lead' : ''}">
         <span class="gp-name">${esc(p)}${p === leader ? ' 👑' : ''}</span>
         <span class="gp-sub">${sub}</span>
-        <b class="gp-score">${s.monthBest ?? '—'}<small>this month</small></b>
+        <b class="gp-score">${s.weekBest ?? '—'}<small>this week</small></b>
       </li>`;
     }).join('');
     const me = g.players[state.me];
     $('gameHint').textContent = me.playedToday ? ''
       : me.streak ? `🔥 Play today to keep your ${me.streak}-day streak`
         : me.rounds ? 'Play a round today to start a streak 🔥' : '';
-    $('gameDebts').innerHTML = g.months.filter((m) => m.winner && !m.paidAt).map((m) => {
-      const loser = m.winner === C.HER ? C.HIM : C.HER;
+    $('gameWins').innerHTML = racing ? `🏆 Weeks won: ${weeksWon(g)}` : '';
+    $('gameDebts').innerHTML = g.weeks.filter((w) => w.winner && !w.paidAt).map((w) => {
+      const loser = w.winner === C.HER ? C.HIM : C.HER;
       return `<div class="game-debt">
-        <span>🍦 <b>${esc(loser)}</b> owes ${esc(m.winner)} ${m.qty} · ${esc(monthLabel(m.month, 'short'))}</span>
-        <button class="btn btn-small btn-plain" data-game-paid="${m.month}">Paid ✓</button>
+        <span>🍦 <b>${esc(loser)}</b> owes ${esc(w.winner)} ${w.qty} · ${esc(weekLabel(w.week))}</span>
+        <button class="btn btn-small btn-plain" data-game-paid="${w.week}">Paid ✓</button>
       </div>`;
     }).join('');
   }
@@ -1822,7 +1833,7 @@
     const b = e.target.closest('[data-game-paid]');
     if (!b || !confirmTap(b, 'Sure? Tap again')) return;
     try {
-      const res = await api(`/game/months/${b.dataset.gamePaid}/paid`, 'POST', {});
+      const res = await api(`/game/weeks/${b.dataset.gamePaid}/paid`, 'POST', {});
       setState(res.state);
       renderAll();
       sfx.yay();
@@ -1952,11 +1963,11 @@
       if (r.tookRecord) lines.push(`🏆 You took the all-time record from ${esc(other)}!`);
       else if (r.record) lines.push('🏆 New all-time record!');
       else if (r.personalBest) lines.push('🎉 New personal best!');
-      if (r.tookLead) lines.push(`👑 You lead the ${esc(monthLabel(g.month))} race!`);
+      if (r.tookLead) lines.push("👑 You lead this week's race!");
       const me = g.players[state.me];
       if (me.streak > 1 && me.rounds && !lines.length) lines.push(`🔥 ${me.streak}-day streak`);
-      const theirs = g.players[other].monthBest;
-      lines.push(`<li class="muted">This month: you ${me.monthBest ?? 0} · ${esc(other)} ${theirs ?? 0}</li>`);
+      const theirs = g.players[other].weekBest;
+      lines.push(`<li class="muted">This week: you ${me.weekBest ?? 0} · ${esc(other)} ${theirs ?? 0}</li>`);
       gamePanel('over', { score, lines: lines.map((l) => (l.startsWith('<li') ? l : `<li>${l}</li>`)) });
       if (r.record || r.personalBest || r.tookLead) {
         sfx.yay();
@@ -2081,15 +2092,17 @@
     ];
     renderSurprises();
     $('stats').innerHTML = stats.map(([b, s]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
-    const races = (state.game && state.game.months) || [];
+    const races = (state.game && state.game.weeks) || [];
     $('races').hidden = !races.length;
-    $('races').innerHTML = `<h2>🏁 Scoop Stack races</h2><ul>${races.map((m) => {
-      const score = (p) => (m.best[p] === null ? 'no-show' : m.best[p]);
-      const result = m.winner
-        ? `${esc(m.winner)} won 👑 · ${m.paidAt ? 'paid ✓' : `${esc(m.winner === C.HER ? C.HIM : C.HER)} owes ${m.qty} 🍦`}`
-        : m.best[C.HER] === null && m.best[C.HIM] === null ? 'nobody played' : 'a tie 🤝';
-      return `<li><b>${esc(monthLabel(m.month))}</b> · ${esc(C.HER)} ${score(C.HER)} – ${score(C.HIM)} ${esc(C.HIM)} · ${result}</li>`;
-    }).join('')}</ul>`;
+    $('races').innerHTML = `<h2>🏁 Scoop Stack races</h2>
+      <p class="races-wins">🏆 Weeks won: ${races.length ? weeksWon(state.game) : ''}</p>
+      <ul>${races.map((w) => {
+        const score = (p) => (w.best[p] === null ? 'no-show' : w.best[p]);
+        const result = w.winner
+          ? `${esc(w.winner)} won 👑 · ${w.paidAt ? 'paid ✓' : `${esc(w.winner === C.HER ? C.HIM : C.HER)} owes ${w.qty} 🍦`}`
+          : w.best[C.HER] === null && w.best[C.HIM] === null ? 'nobody played' : 'a tie 🤝';
+        return `<li><b>${esc(weekLabel(w.week))}</b> · ${esc(C.HER)} ${score(C.HER)} – ${score(C.HIM)} ${esc(C.HIM)} · ${result}</li>`;
+      }).join('')}</ul>`;
 
     const shopName = (id) => (state.shops.find((s) => s.id === id) || {}).name;
     const next = new Map();

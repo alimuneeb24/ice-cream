@@ -127,11 +127,23 @@ CREATE TABLE IF NOT EXISTS game_scores (
 );
 CREATE INDEX IF NOT EXISTS idx_game_scores_month ON game_scores (month, who);
 
--- Settled monthly races (written by the nightly cron). The loser owes the winner
--- `qty` ice creams: a separate tally from the "baad mein bataonga" count.
+-- Monthly races, from before they became weekly (never used; kept so nothing is dropped).
 CREATE TABLE IF NOT EXISTS game_months (
   month       TEXT PRIMARY KEY,         -- 'YYYY-MM'
   fiza_best   INTEGER,                  -- NULL = didn't play that month
+  muneeb_best INTEGER,
+  winner      TEXT,                     -- NULL = tie, or nobody played
+  qty         INTEGER NOT NULL,         -- 2, or 0 when nobody owes
+  paid_at     INTEGER,
+  settled_at  INTEGER NOT NULL
+);
+
+-- Settled weekly races, Monday to Sunday in Karachi (written by the nightly cron).
+-- The loser owes the winner `qty` ice creams: a separate tally from the
+-- "baad mein bataonga" count. Rows with a winner are the "weeks won" score.
+CREATE TABLE IF NOT EXISTS game_weeks (
+  week        TEXT PRIMARY KEY,         -- the Monday, 'YYYY-MM-DD'
+  fiza_best   INTEGER,                  -- NULL = didn't play that week
   muneeb_best INTEGER,
   winner      TEXT,                     -- NULL = tie, or nobody played
   qty         INTEGER NOT NULL,         -- 2, or 0 when nobody owes
