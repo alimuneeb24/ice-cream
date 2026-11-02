@@ -92,9 +92,12 @@ export default {
     }
   },
 
-  // Cron (see wrangler.toml): settles finished Scoop Stack races + the last-day reminder.
+  // Cron (see wrangler.toml): Scoop Stack results, race start and last-day pings,
+  // plus the daytime nudges.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(gameCron(env, event.scheduledTime || Date.now()));
+    const now = event.scheduledTime || Date.now();
+    ctx.waitUntil(gameCron(env, now));
+    ctx.waitUntil(nudgeCron(env, now));
   },
 };
 
@@ -116,16 +119,14 @@ async function route(request, env, me, ctx) {
   if (method === "POST" && path === "/owe") {
     const res = await owe(db, me, await readBody(request));
     const n = res.body.state.totals.pending;
-    tell(ctx, env, me, me === "Fiza"
-      ? { title: "🔔 Caught!", body: `Fiza rang the bell. +2, that's ${n} now 🙄`, tag: "owe" }
-      : { title: "🫡 Muneeb self-reported", body: `+2. Respect. ${n} now.`, tag: "owe" });
+    tell(ctx, env, me, { tag: "owe", ...(me === "Fiza" ? fizaRangLine(n) : selfReportLine(n)) });
     return res;
   }
   if (method === "POST" && path === "/paid") {
     const res = await paid(db, me, await readBody(request));
     tell(ctx, env, me, {
       title: `😋 ${plural(res.body.event.qty, "ice cream")} paid off`,
-      body: `${me} logged it. ${res.body.state.totals.pending} to go.`,
+      body: `${nameFor(me)} logged it. ${res.body.state.totals.pending} to go.${rare(10) ? " (Real ones, not 10 rupay wali Dairy Milks 🍫)" : ""}`,
       tag: "paid",
     });
     return res;
@@ -138,7 +139,7 @@ async function route(request, env, me, ctx) {
     const shop = p.shopId && res.body.state.shops.find((s) => s.id === p.shopId)?.name;
     const bits = [shop, p.rating ? "🍦".repeat(p.rating) : null, p.note ? `“${p.note}”` : null,
       p.paidQty ? `${plural(p.paidQty, "ice cream")} off the debt` : null].filter(Boolean);
-    tell(ctx, env, me, { title: `📸 New polaroid from ${me}`, body: bits.join(" · ") || "Come see it 👀", tag: "post" });
+    tell(ctx, env, me, { title: `📸 New polaroid from ${nameFor(me)}`, body: bits.join(" · ") || "Come see it 👀", tag: "post" });
     return res;
   }
   if (method === "POST" && path === "/spin") {
@@ -146,7 +147,7 @@ async function route(request, env, me, ctx) {
     const name = optText(body, "name", MAX_NAME);
     const emoji = optText(body, "emoji", 8);
     if (name) {
-      tell(ctx, env, me, { title: `🎡 ${me} spun the wheel`, body: `Aaj ka flavour: ${name}${emoji ? " " + emoji : ""}`, tag: "spin" });
+      tell(ctx, env, me, { title: `🎡 ${nameFor(me)} spun the wheel`, body: `Aaj ka flavour: ${name}${emoji ? " " + emoji : ""}`, tag: "spin" });
     }
     return { body: { ok: true } };
   }
@@ -284,11 +285,28 @@ const PAID_INSERT_SQL = `INSERT INTO events (type, qty, by, note, flavour, shop_
   WHERE pending > 0
   RETURNING *`;
 
+// "+2" pings, each with a rare version now and then.
+const fizaRangLine = (n) => rare(12)
+  ? { title: "🚨 FIA breaking news", body: `You said it again. +2, that's ${n} now. Dadi has been informed 📞` }
+  : { title: "🔔 Caught!", body: `Fiza rang the bell. +2, that's ${n} now 🙄` };
+const selfReportLine = (n) => rare(8)
+  ? pickOne([
+    { title: "🛂 Passportless, but honest", body: `Muneeb reported himself. +2, ${n} now. FIA respects it 🫡` },
+    { title: "🐒 The Grand Monkey strikes again", body: `GM reported himself. +2, that's ${n} now 🫡` },
+    { title: "🫡 Kaala self-reported", body: `+2. Respect. ${n} now.` },
+  ])
+  : { title: "🫡 Muneeb self-reported", body: `+2. Respect. ${n} now.` };
+
 // Notify the other person (never the one who did it). Runs after the response.
 function tell(ctx, env, me, msg) {
   ctx.waitUntil(notify(env, me === "Muneeb" ? "Fiza" : "Muneeb", { url: "./", ...msg }));
 }
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const pickOne = (list) => list[Math.floor(Math.random() * list.length)];
+// True about once in `odds` tries: the rare versions of the usual notifications.
+const rare = (odds) => Math.random() < 1 / odds;
+// Muneeb's name in pings to Fiza, now and then one of his nicknames instead.
+const nameFor = (who) => (who === "Muneeb" && rare(8) ? pickOne(["GM", "Kaala"]) : who);
 
 // ---- Scrapbook: one polaroid per ice cream, full-size original kept in R2 ----
 
@@ -668,6 +686,10 @@ const VISIT_LINES = [
   ["👀 Fiza just opened the site", "Agent Aloo is watching too 🥔"],
   ["🍦 Fiza dropped by", "Quick, think of an excuse"],
 ];
+const VISIT_RARE = [
+  ["🥔 FIA alert: Fiza spotted in the parlour", "Act natural 😶"],
+  ["🚂 Geet has entered the parlour", "Main apni favourite hoon ✨"],
+];
 async function notifyVisit(db, env, now) {
   const claimed = await db
     .prepare(
@@ -678,7 +700,7 @@ async function notifyVisit(db, env, now) {
     .bind(String(now), now - OPEN_NOTIFY_GAP_MS)
     .first();
   if (!claimed) return;
-  const [title, body] = VISIT_LINES[Math.floor(Math.random() * VISIT_LINES.length)];
+  const [title, body] = rare(15) ? pickOne(VISIT_RARE) : pickOne(VISIT_LINES);
   await notify(env, "Muneeb", { title, body, tag: "visit" });
 }
 
@@ -883,7 +905,7 @@ async function gameStart(db, env, me, ctx) {
       .first();
     if (today.n) body = `${plural(today.n, "round")} today, best ${today.best} · ${body}`;
   }
-  tell(ctx, env, me, { title: `🎮 ${me} is playing Scoop Stack`, body, tag: "game-play", url: "./#game" });
+  tell(ctx, env, me, { title: `🎮 ${nameFor(me)} is playing Scoop Stack`, body, tag: "game-play", url: "./#game" });
   return { body: { ok: true } };
 }
 
@@ -923,7 +945,7 @@ async function gameScore(db, env, me, body, ctx) {
 
   if (result.tookRecord) {
     tell(ctx, env, me, {
-      title: `🏆 ${me} beat your all-time best`,
+      title: `🏆 ${nameFor(me)} beat your all-time best`,
       body: `${plural(score, "scoop")} (yours: ${theirBest})${result.tookLead ? " · and leads this week 👑" : ""}`,
       tag: "game-record",
       url: "./#game",
@@ -937,8 +959,8 @@ async function gameScore(db, env, me, body, ctx) {
     });
   } else if (result.tookLead) {
     tell(ctx, env, me, theirWeek
-      ? { title: `👑 ${me} took this week's lead`, body: `${plural(score, "scoop")} vs your ${theirWeek}. Your move 👀`, tag: "game-lead", url: "./#game" }
-      : { title: `🏁 ${me} opened this week's race`, body: `${plural(score, "scoop")}. Your move 👀`, tag: "game-lead", url: "./#game" });
+      ? { title: `👑 ${nameFor(me)} took this week's lead`, body: `${plural(score, "scoop")} vs your ${theirWeek}. Your move 👀`, tag: "game-lead", url: "./#game" }
+      : { title: `🏁 ${nameFor(me)} opened this week's race`, body: `${plural(score, "scoop")}. Your move 👀`, tag: "game-lead", url: "./#game" });
   }
   return ok(await getState(db, me), { result });
 }
@@ -1021,30 +1043,106 @@ async function gameCron(env, now) {
     const tally = await weeksWonLine(db);
     await Promise.all([
       notify(env, winner, { title: `🏆 You won the ${name} race!`, body: `${best[winner]} vs ${score(loser)}. ${loser} owes you ${plural(GAME_STAKE, "ice cream")} 🍦${tally}`, tag: "game-week", url: "./#game" }),
-      notify(env, loser, { title: `🍦 ${name} goes to ${winner}`, body: `${best[winner]} ${best[loser] === null ? "and you didn't play 🙈" : `vs your ${best[loser]}`}. You owe ${plural(GAME_STAKE, "ice cream")} 🙈${tally}`, tag: "game-week", url: "./#game" }),
+      notify(env, loser, { title: `🍦 ${name} goes to ${nameFor(winner)}`, body: `${best[winner]} ${best[loser] === null ? "and you didn't play 🙈" : `vs your ${best[loser]}`}. You owe ${plural(GAME_STAKE, "ice cream")} 🙈${tally}`, tag: "game-week", url: "./#game" }),
     ]);
   }
 
-  // Sunday (the race's last day), after noon in Karachi: one reminder each.
-  if (current >= GAME_FIRST_RACE && pk(now).getUTCDay() === 0 && pk(now).getUTCHours() >= 12) {
-    const claimed = await db
-      .prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING RETURNING value`)
-      .bind(`game_lastday_${current}`, String(now))
-      .first();
-    if (claimed) {
-      const { results } = await db
-        .prepare(`SELECT who, MAX(score) AS best FROM game_scores WHERE day >= ? GROUP BY who`)
-        .bind(current)
-        .all();
-      const best = Object.fromEntries(results.map((r) => [r.who, r.best]));
-      const msg = {
-        title: "⏳ Last day of this week's race!",
-        body: `Fiza ${best.Fiza ?? 0} · Muneeb ${best.Muneeb ?? 0}. Loser owes ${plural(GAME_STAKE, "ice cream")} 🍦`,
+  const hour = pk(now).getUTCHours();
+  const claim = async (key) => db
+    .prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING RETURNING value`)
+    .bind(key, String(now))
+    .first();
+  const weekBests = async () => {
+    const { results } = await db
+      .prepare(`SELECT who, MAX(score) AS best FROM game_scores WHERE day >= ? GROUP BY who`)
+      .bind(current)
+      .all();
+    return Object.fromEntries(results.map((r) => [r.who, r.best]));
+  };
+
+  // A new race week: one "it's on" ping each, Monday from 9 am Karachi (the 10 am
+  // cron, or 6 pm if that one missed). The first race week (GAME_FIRST_RACE) had none.
+  if (current > GAME_FIRST_RACE && pk(now).getUTCDay() === 1 && hour >= 9 && (await claim(`game_started_${current}`))) {
+    const prev = await db.prepare(`SELECT winner FROM game_weeks WHERE week = ?`).bind(addDays(current, -7)).first();
+    const settled = await db.prepare(`SELECT 1 FROM game_weeks WHERE winner IS NOT NULL LIMIT 1`).first();
+    const tally = settled ? await weeksWonLine(db) : "";
+    const title = rare(10) ? "🥔 FIA has approved a new race" : pickOne(["🏁 A new race has started!", "🏁 New week, new race!"]);
+    await Promise.all(PLAYERS.map((p) => {
+      const mood = !prev?.winner ? "" : prev.winner === p ? " Defend the crown 👑" : " Revenge week? 😤";
+      return notify(env, p, {
+        title,
+        body: `${weekName(current)}: highest stack by Sunday night wins, loser owes ${plural(GAME_STAKE, "ice cream")} 🍦${mood}${tally}`,
+        tag: "game-week-start",
+        url: "./#game",
+      });
+    }));
+  }
+
+  // Sunday (the race's last day), after noon in Karachi: one reminder each, saying
+  // where they stand.
+  if (current >= GAME_FIRST_RACE && pk(now).getUTCDay() === 0 && hour >= 12 && (await claim(`game_lastday_${current}`))) {
+    const best = await weekBests();
+    const score = `Fiza ${best.Fiza ?? 0} · Muneeb ${best.Muneeb ?? 0}`;
+    await Promise.all(PLAYERS.map((p) => {
+      const mine = best[p] ?? 0;
+      const theirs = best[otherOf(p)] ?? 0;
+      const where = mine > theirs ? "You're ahead, guard it 👑"
+        : mine < theirs ? `You're ${theirs - mine} behind. Last chance 👀`
+          : mine ? "It's a tie right now 😳" : "Nobody's played yet 🙈";
+      return notify(env, p, {
+        title: Math.abs(mine - theirs) <= 3 && mine + theirs > 0 ? "⏳ Last day, and it's close!" : "⏳ Last day of this week's race!",
+        body: `${score}. ${where} Loser owes ${plural(GAME_STAKE, "ice cream")} 🍦`,
         tag: "game-lastday",
         url: "./#game",
-      };
-      await Promise.all(PLAYERS.map((p) => notify(env, p, msg)));
-    }
+      });
+    }));
+  }
+}
+
+// Daytime nudges (9 am–9 pm Karachi, so the 10 am cron, or 6 pm if that one missed):
+// a week or more without a "baad mein bataonga", and a long time without an ice cream
+// (counted from the last one eaten). Each step goes out once, on the day it's reached
+// (or the day after if both crons missed); old ones are never caught up on.
+const CLEAN_STEPS = [30, 14, 7];
+const DROUGHT_STEPS = [30, 14];
+async function nudgeCron(env, now) {
+  const hour = pk(now).getUTCHours();
+  if (hour < 9 || hour >= 21) return;
+  const db = env.DB;
+  const claim = async (key) => db
+    .prepare(`INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING RETURNING value`)
+    .bind(key, String(now))
+    .first();
+  const days = (at) => Math.floor((now - at) / DAY_MS);
+  const stepFor = (steps, at) => steps.find((n) => days(at) >= n && days(at) < n + 2);
+
+  const lastOwe = await db
+    .prepare(`SELECT id, created_at FROM events WHERE type = 'owe' AND by != 'system' ORDER BY id DESC LIMIT 1`)
+    .first();
+  const clean = lastOwe && stepFor(CLEAN_STEPS, lastOwe.created_at);
+  if (clean && (await claim(`clean_${lastOwe.id}_${clean}`))) {
+    const lines = {
+      7: ["🕊️ A whole week without a baad mein bataonga", "Is GM okay? FIA is checking 🔍", "FIA is suspicious, but proud 🥔"],
+      14: ["😳 Two weeks without a baad mein bataonga", "Suspicious. Very suspicious 🥔", "Two weeks clean. Dadi would be proud 🫶"],
+      30: ["🏅 A month without a baad mein bataonga!", "Is this even the same Kaala? 🤨", "A whole month. Who are you? 🏅"],
+    }[clean];
+    await Promise.all([
+      notify(env, "Fiza", { title: lines[0], body: lines[1], tag: "clean" }),
+      notify(env, "Muneeb", { title: lines[0], body: lines[2], tag: "clean" }),
+    ]);
+  }
+
+  const { pending } = await db
+    .prepare(`SELECT COALESCE(SUM(CASE type WHEN 'owe' THEN qty ELSE -qty END), 0) AS pending FROM events`)
+    .first();
+  const lastPaid = await db.prepare(`SELECT id, created_at FROM events WHERE type = 'paid' ORDER BY id DESC LIMIT 1`).first();
+  const drought = pending > 0 && lastPaid && stepFor(DROUGHT_STEPS, lastPaid.created_at);
+  if (drought && (await claim(`drought_${lastPaid.id}_${drought}`))) {
+    const title = drought === 14 ? "🍦 Two weeks without an ice cream" : "🥲 A whole month without an ice cream";
+    await Promise.all([
+      notify(env, "Fiza", { title, body: `Muneeb still owes ${plural(pending, "ice cream")}. Remind him? 👀`, tag: "drought" }),
+      notify(env, "Muneeb", { title, body: `You owe ${plural(pending, "ice cream")}. "Baad mein bataonga" is not a plan 🙄`, tag: "drought" }),
+    ]);
   }
 }
 
@@ -1087,7 +1185,7 @@ function gameState(now, me, totals, days, weeks, rounds) {
       qty: r.qty,
       paidAt: r.paid_at,
     })),
-    ...(me === "Muneeb" ? { rounds: rounds.map((r) => ({ id: r.id, who: r.who, score: r.score, createdAt: r.created_at })) } : {}),
+    rounds: rounds.map((r) => ({ id: r.id, who: r.who, score: r.score, createdAt: r.created_at })),
   };
 }
 
@@ -1209,9 +1307,8 @@ async function getState(db, me) {
     ).bind(week),
     db.prepare(`SELECT DISTINCT who, day FROM game_scores`),
     db.prepare(`SELECT * FROM game_weeks ORDER BY week DESC`),
-    // Recent rounds for the admin page (Muneeb only).
-    db.prepare(`SELECT id, who, score, created_at FROM game_scores WHERE ?1 = 'Muneeb' ORDER BY created_at DESC, id DESC LIMIT 40`)
-      .bind(me),
+    // Recent rounds: the history list for both, and deletable on Muneeb's admin page.
+    db.prepare(`SELECT id, who, score, created_at FROM game_scores ORDER BY created_at DESC, id DESC LIMIT 100`),
     // The bin, for the admin page (Muneeb only).
     db.prepare(`SELECT * FROM bin WHERE ?1 = 'Muneeb' AND restored_at IS NULL ORDER BY deleted_at DESC, id DESC LIMIT 50`)
       .bind(me),

@@ -424,7 +424,12 @@ h1, h2 { margin: 0; font-weight: 700; letter-spacing: 0.2px; }
 .wanted h2 { font-size: 40px; letter-spacing: 3px; color: var(--strawberry-deep); text-shadow: 0 3px 0 var(--ink); -webkit-text-stroke: 1.5px var(--ink); }
 .wanted .mug-svg { width: 140px; margin: 8px auto 4px; display: block; }
 .wanted .name { font-size: 26px; font-weight: 700; }
-.wanted .crime { margin: 4px 0 10px; }
+.wanted .crime { margin: 4px 0 4px; }
+.wanted .mug-svg { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.wanted .alias { font-size: 15px; }
+.wanted .alias b { display: inline-block; }
+.wanted .alias b.pop { animation: bump 0.5s cubic-bezier(.3, 1.8, .5, 1); }
+.wanted .flight { font-size: 13px; opacity: 0.75; margin: 2px 0 10px; }
 .wanted .reward {
   display: inline-block; padding: 6px 14px; border: 2.5px solid var(--ink); border-radius: 12px;
   background: var(--mango); font-weight: 700;
@@ -682,6 +687,7 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
 .aloo-id dt { display: inline; font-weight: 700; }
 .aloo-id dd { display: inline; margin: 0; }
 .aloo-id dd::after { content: ''; display: block; }
+.aloo-id { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .aloo-id .id-title { font-weight: 700; font-size: 12px; letter-spacing: 1.5px; color: #3B8FC2; margin-bottom: 2px; }
 
 /* ---------- bauni easter eggs ---------- */
@@ -911,6 +917,16 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
 .game-board { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
 .game-wins { margin: 10px 0 0; text-align: center; font-size: 15px; }
 .game-wins:empty { display: none; }
+.game-history { margin-top: 12px; border: 2.5px solid var(--ink); border-radius: 14px; background: #fff; }
+.game-history summary { cursor: pointer; padding: 10px 12px; font-size: 15px; list-style: none; }
+.game-history summary::-webkit-details-marker { display: none; }
+.game-history[open] summary { border-bottom: 2px dashed rgba(90, 58, 46, 0.15); }
+#gameHistoryList { max-height: 320px; overflow-y: auto; padding: 0 12px 10px; }
+#gameHistoryList h4 { margin: 10px 0 4px; font-size: 14px; }
+#gameHistoryList ul { list-style: none; margin: 0; padding: 0; }
+#gameHistoryList li { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; font-size: 14px; }
+#gameHistoryList .gh-who { min-width: 64px; }
+#gameHistoryList .muted { margin-left: auto; font-size: 13px; }
 .gp {
   display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 10px;
   padding: 8px 14px; background: #fff; border: 2.5px solid var(--ink); border-radius: 16px;
@@ -1007,3 +1023,7 @@ button.next-surprise { border: 0; background: none; padding: 0; text-decoration:
 .races-wins { margin: -2px 0 10px; font-size: 16px; }
 .races ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .races li { padding: 8px 12px; background: #fff; border: 2.5px solid var(--ink); border-radius: 14px; font-size: 15px; }
+
+/* Little FIA footnotes in the post sheet (Dairy Milk rule, Mickey Mouse). */
+.fia-rule { margin: 6px 2px 0; font-size: 13px; opacity: 0.8; }
+.paid-toggle .fia-rule { flex-basis: 100%; margin-top: -6px; }

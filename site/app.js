@@ -24,6 +24,7 @@
   const esc = (s) =>
     String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const pickOne = (list) => list[Math.floor(Math.random() * list.length)];
   const rand = (a, b) => a + Math.random() * (b - a);
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const now = () => Date.now() + clockOffset;
@@ -276,7 +277,8 @@
     setTimeout(dots, 250);
     $('lockMsg').textContent = triesLeft <= 3 ? `Hmm, wrong flavour. ${plural(triesLeft, 'try')} left` : 'Hmm, wrong flavour.';
     $('alooSays').textContent =
-      wrongCount >= 4 ? "Can't see anyone… bauni, is that you? 🔍"
+      wrongCount >= 5 ? 'Dadi has been informed 📞'
+        : wrongCount === 4 ? "Can't see anyone… bauni, is that you? 🔍"
         : wrongCount === 3 ? 'FIA has opened a file on you 📁'
           : wrongCount === 2 ? 'Aloo is very suspicious 🧐' : 'Aloo is suspicious 🤨';
     $('aloo').classList.add('show');
@@ -324,7 +326,11 @@
   // ---------- app shell ----------
   function showApp() {
     $('app').hidden = false;
-    $('hello').textContent = isHim() ? `Hi ${C.HIM} 🙈` : `Hi ${C.HER} 👋`;
+    $('hello').textContent = isHim()
+      ? (Math.random() < 1 / 8 ? `Hi ${pickOne(['GM 🐒', 'Passportless 🛂', 'Kaala 🙈'])}` : `Hi ${C.HIM} 🙈`)
+      : `Hi ${C.HER} 👋`;
+    // Geet easter egg: now and then, a Jab We Met welcome for her.
+    if (!isHim() && Math.random() < 1 / 12) setTimeout(() => toast('Main apni favourite hoon ✨', { sub: 'Geet would approve 🚂' }), 2600);
     if (!appReady) {
       appReady = true;
       $('shopSign').textContent = C.SHOP_NAME;
@@ -337,7 +343,8 @@
         <dt>Name:</dt> <dd>Agent Aloo</dd>
         <dt>Agency:</dt> <dd>Fiza Investigation Aloo</dd>
         <dt>Specialty:</dt> <dd>catching “baad mein bataonga”</dd>
-        <dt>Height:</dt> <dd>taller than ${esc(C.HER)}</dd></dl></div>`;
+        <dt>Height:</dt> <dd>taller than ${esc(C.HER)}</dd>
+        <dt>Classified:</dt> <dd id="alooFact">tap to reveal 🔒</dd></dl></div>`;
       buildDecor();
       initWheel();
       initMap();
@@ -667,6 +674,8 @@
       : `Ring the bell: ${C.HIM} said baad mein bataonga, add 2 ice creams`);
   }
 
+  let frozenTaps = 0;
+  let lastFrozenTap = 0;
   $('bellBtn').addEventListener('click', async () => {
     if (inFlight || !state) return;
     const btn = $('bellBtn');
@@ -676,7 +685,10 @@
       void btn.offsetWidth;
       btn.classList.add('nope');
       sfx.nope();
-      toast(`Sabar! The bell unfreezes in ${fmtLeft(left)} ❄️`, { sub: `One report every ${C.COOLDOWN_MS / 60000} minutes` });
+      frozenTaps = Date.now() - lastFrozenTap < 1500 ? frozenTaps + 1 : 1;
+      lastFrozenTap = Date.now();
+      if (frozenTaps >= 4) toast('Brainless 🤦', { sub: "It's still frozen. Tapping harder won't help" });
+      else toast(`Sabar! The bell unfreezes in ${fmtLeft(left)} ❄️`, { sub: `One report every ${C.COOLDOWN_MS / 60000} minutes` });
       return;
     }
     inFlight = true;
@@ -1425,6 +1437,8 @@
            <output id="qtyOut">${qty}</output>
            <button class="btn" data-step="1" aria-label="One more">+</button>
          </div>
+         <p class="fia-rule" id="mickey" hidden></p>
+         ${Math.random() < 1 / 3 ? '<p class="fia-rule">FIA rule: a 10 rupay wali Dairy Milk doesn\'t count 🍫</p>' : ''}
        </div>` : ''}
        <div class="upload-bar" id="uploadBar" hidden><i></i><span>Uploading…</span></div>
        <div class="sheet-actions">
@@ -1460,6 +1474,10 @@
             b.onclick = () => {
               qty = Math.max(1, Math.min(pending, qty + +b.dataset.step));
               root.querySelector('#qtyOut').textContent = qty;
+              // Mickey Mouse easter egg (the sore-throat voice).
+              const mickey = root.querySelector('#mickey');
+              mickey.hidden = qty < 4;
+              mickey.textContent = `${qty} at once? Gala sambhal ke, Mickey Mouse 🐭`;
               sfx.tap();
             };
           });
@@ -1819,12 +1837,38 @@
       : me.streak ? `🔥 Play today to keep your ${me.streak}-day streak`
         : me.rounds ? 'Play a round today to start a streak 🔥' : '';
     $('gameWins').innerHTML = racing ? `🏆 Weeks won: ${weeksWon(g)}` : '';
+    renderGameHistory(g.rounds || []);
     $('gameDebts').innerHTML = g.weeks.filter((w) => w.winner && !w.paidAt).map((w) => {
       const loser = w.winner === C.HER ? C.HIM : C.HER;
       return `<div class="game-debt">
         <span>🍦 <b>${esc(loser)}</b> owes ${esc(w.winner)} ${w.qty} · ${esc(weekLabel(w.week))}</span>
         <button class="btn btn-small btn-plain" data-game-paid="${w.week}">Paid ✓</button>
       </div>`;
+    }).join('');
+  }
+
+  // Recent rounds for both of you, by day (view only; deleting is on the admin page).
+  function renderGameHistory(rounds) {
+    $('gameHistory').hidden = !rounds.length;
+    $('gameHistorySum').innerHTML = `📜 <b>History</b> · last ${plural(rounds.length, 'round')}`;
+    const dayKey = (ms) => new Date(ms).toDateString();
+    const today = dayKey(now());
+    const yesterday = dayKey(now() - 86400000);
+    const days = new Map();
+    rounds.forEach((r) => {
+      const k = dayKey(r.createdAt);
+      if (!days.has(k)) days.set(k, []);
+      days.get(k).push(r);
+    });
+    $('gameHistoryList').innerHTML = [...days].map(([k, list]) => {
+      const label = k === today ? 'Today' : k === yesterday ? 'Yesterday'
+        : new Date(list[0].createdAt).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      const best = Math.max(...list.map((r) => r.score));
+      return `<h4>${label}</h4><ul>${list.map((r) => `<li>
+          <span class="gh-who">${esc(r.who)}</span>
+          <b>${r.score}${r.score === best && list.length > 1 ? ' 👑' : ''}</b>
+          <span class="muted">${new Date(r.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).toLowerCase()}</span>
+        </li>`).join('')}</ul>`;
     }).join('');
   }
 
@@ -1962,7 +2006,7 @@
       const lines = [];
       if (r.tookRecord) lines.push(`🏆 You took the all-time record from ${esc(other)}!`);
       else if (r.record) lines.push('🏆 New all-time record!');
-      else if (r.personalBest) lines.push('🎉 New personal best!');
+      else if (r.personalBest) lines.push(state.me === C.HER && Math.random() < 1 / 4 ? '🎉 New personal best! Main apni favourite hoon 💁‍♀️' : '🎉 New personal best!');
       if (r.tookLead) lines.push("👑 You lead this week's race!");
       const me = g.players[state.me];
       if (me.streak > 1 && me.rounds && !lines.length) lines.push(`🔥 ${me.streak}-day streak`);
@@ -2059,6 +2103,8 @@
       ${Art.mugshot()}
       <div class="name">${esc(C.HIM.toUpperCase())}</div>
       <div class="crime">for <b>${counts}</b> counts of “baad mein bataonga”</div>
+      <div class="alias">a.k.a. <b>${esc(ALIASES[aliasNo % ALIASES.length])}</b></div>
+      <div class="flight">Flight risk: none (passportless 🛂)</div>
       <div class="reward">${pending ? `Reward: ${plural(pending, 'ice cream')} 🍦` : 'Paid in full… for now 👀'}</div>`;
 
     const real = chronological().filter((e) => e.type === 'owe' && e.by !== 'system');
@@ -2141,6 +2187,35 @@
       .join('') || '<li class="cases-empty">No cases yet 🕵️</li>';
     prevStatus = next;
   }
+
+  // FIA easter eggs: tap the mugshot for Muneeb's other names, and Agent Aloo's ID
+  // card for the classified bits.
+  const ALIASES = ['GM (Grand Monkey) 🐒', 'Kaala', 'Half Pakistani'];
+  let aliasNo = 0;
+  $('wanted').addEventListener('click', (e) => {
+    if (!e.target.closest('.mug-svg')) return;
+    aliasNo++;
+    const b = $('wanted').querySelector('.alias b');
+    b.textContent = ALIASES[aliasNo % ALIASES.length];
+    b.classList.remove('pop');
+    void b.offsetWidth;
+    b.classList.add('pop');
+    sfx.tap();
+  });
+  const ALOO_FACTS = [
+    'reports directly to Dadi 📞',
+    'bribes accepted: 10 rupay wali Dairy Milk 🍫',
+    'gadgets borrowed from Doraemon 🔵',
+    'voice sample on file: Mickey Mouse, sore-throat edition 🐭',
+    'still looking for Muneeb’s passport 🛂',
+    'has never once said “baad mein bataonga”',
+  ];
+  let alooFactNo = -1;
+  $('alooId').addEventListener('click', () => {
+    alooFactNo = (alooFactNo + 1) % ALOO_FACTS.length;
+    $('alooFact').textContent = ALOO_FACTS[alooFactNo];
+    sfx.tap();
+  });
 
   $('cases').addEventListener('click', (e) => {
     const b = e.target.closest('.case-edit');
@@ -2256,6 +2331,7 @@
       sfx.yay();
       burst($('wheel'), { colors: [f.color, '#ffffff', '#FFB5C8', '#CDB4FF'], particleCount: 50 });
       api('/spin', 'POST', { flavour: f.key, name: f.name, emoji: f.emoji }).catch(() => {});
+      if (Math.random() < 1 / 20) setTimeout(() => toast('🔵 Doraemon peeked out of his pocket', { sub: 'He votes dorayaki. Overruled.' }), 1400);
     }, reduceMotion ? 50 : 4300);
   });
 

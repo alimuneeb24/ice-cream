@@ -20,10 +20,11 @@ ALLOWED_ORIGINS = "https://alimuneeb24.github.io"
 # PIN_MUNEEB and PIN_FIZA are secrets: .dev.vars locally, `wrangler secret put` in production.
 
 # 🎮 Scoop Stack: settle last week's race just after midnight Karachi time
-# (19:05 UTC; it only finds one to settle on Monday), and send the Sunday
-# last-day reminder at 6 pm Karachi (13:00 UTC).
+# (19:05 UTC; it only finds one to settle on Monday), the "new race" ping at 10 am
+# Monday (05:00 UTC), and the Sunday last-day reminder at 6 pm (13:00 UTC).
+# The 10 am run also sends the daytime nudges (6 pm retries if it was missed).
 [triggers]
-crons = ["5 19 * * *", "0 13 * * *"]
+crons = ["5 19 * * *", "0 5 * * *", "0 13 * * *"]
 
 # Cloudflare's own request logs (errors and crashes, kept a few days). The permanent
 # who-did-what log is the activity_log table: `npm run logs`.
